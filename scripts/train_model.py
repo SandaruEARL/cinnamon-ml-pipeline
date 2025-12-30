@@ -14,6 +14,11 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import pickle
 import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+MODELS_DIR = BASE_DIR / "models"
 
 # ============================================================================
 # CONFIGURATION
@@ -74,7 +79,7 @@ def engineer_features(df):
     df['month'] = df['date'].dt.month
     df['day'] = df['date'].dt.day
     df['day_of_week'] = df['date'].dt.dayofweek
-    df['week_of_year'] = df['date'].dt.isocalendar().week
+    df['week_of_year'] = df['date'].dt.isocalendar().week.astype(int)
     df['quarter'] = df['date'].dt.quarter
     
     # Cyclical encoding for seasonality
@@ -250,7 +255,7 @@ def convert_to_tflite(model, output_path):
 # ============================================================================
 # STEP 7: SAVE METADATA
 # ============================================================================
-def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config):
+def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config, test_loss, test_mae):
     """Save preprocessing artifacts and config"""
     print("\n💾 Saving metadata...")
     
@@ -271,7 +276,9 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config)
         'districts': district_encoder.classes_.tolist(),
         'grades': grade_encoder.classes_.tolist(),
         'model_version': datetime.now().strftime('%Y%m%d_%H%M%S'),
-        'trained_on': datetime.now().isoformat()
+        'trained_on': datetime.now().isoformat(),
+        'test_loss': float(test_loss),
+        'test_mae': float(test_mae)
     }
     
     with open('models/metadata.json', 'w') as f:
@@ -291,8 +298,10 @@ def main():
     import os
     os.makedirs('models', exist_ok=True)
     
+    csv_path = DATA_DIR / "cinnamon_grades.csv"
+
     # Load and clean data
-    df = load_and_clean_data('cinnamon_grades.csv')
+    df = load_and_clean_data(csv_path)
     
     # Feature engineering
     df = engineer_features(df)
@@ -342,8 +351,8 @@ def main():
     convert_to_tflite(model, 'models/cinnamon_grades_model.tflite')
     
     # Save metadata
-    save_metadata(scaler, district_enc, grade_enc, feature_cols, CONFIG)
-    
+    save_metadata(scaler,district_enc,grade_enc,feature_cols,CONFIG,test_loss,test_mae)
+
     print("\n" + "=" * 70)
     print("✅ TRAINING COMPLETE!")
     print("=" * 70)
