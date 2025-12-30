@@ -161,3 +161,27 @@ jobs:
         echo "📋 Copying model files..."
         cp ../models/latest.tflite models/
         cp ../models/version.json models/
+
+        # Configure git for public repo
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Stage the files
+        git add models/latest.tflite models/version.json
+        
+        # Get version for commit message
+        VERSION=$(jq -r '.version' models/version.json)
+        TIMESTAMP=$(date +'%Y-%m-%d %H:%M UTC')
+        
+        # Check if there are changes
+        if git diff --staged --quiet; then
+          echo "⚠️  No changes to deploy"
+        else
+          # Commit and push
+          git commit -m "🚀 Deploy model v${VERSION} - ${TIMESTAMP}"
+          git push origin main
+          
+          echo "✅ Public deployment complete!"
+          echo "   Repository: https://github.com/SandaruEARL/cinnamon-models"
+        fi
+        
