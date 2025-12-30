@@ -68,7 +68,7 @@ jobs:
       run: |
         python scripts/train_model.py
         
-        if [ ! -f "models/latest.h5" ]; then
+        if [ ! -f "models/cinnamon_grades_model.h5" ]; then
           echo "❌ Training failed"
           exit 1
         fi
