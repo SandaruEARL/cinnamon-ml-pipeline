@@ -1,0 +1,50 @@
+{
+  "version": "20251230_182607",
+  "updated_at": "2025-12-30T18:26:07.916321",
+  "model_url": "https://SandaruEARL.github.io/cinnamon-ml-pipeline/cinnamon_grades_model.tflite",
+  "version_url": "https://SandaruEARL.github.io/cinnamon-ml-pipeline/version.json",
+  "model_hash": "42733edcbac547a02810e0708ef58e5e75e4eeb88cb5b20daf41bd7e69440480",
+  "model_size_bytes": 570204,
+  "model_size_kb": 556.84,
+  "records_count": 23909,
+  "date_range": {
+    "start": "2016-01-05",
+    "end": "2025-12-23"
+  },
+  "districts": [
+    "Average Price",
+    "Badulla",
+    "Colombo",
+    "Galle",
+    "Gampaha",
+    "Hambantota",
+    "Kalutara",
+    "Kurunegala",
+    "Matara",
+    "Monaragala",
+    "Ratnapura"
+  ],
+  "grades": [
+    "Alba",
+    "C-4",
+    "C-5",
+    "C-5 Sp",
+    "Gorosu",
+    "H-1",
+    "H-2",
+    "H-Faq",
+    "Heen",
+    "M-4",
+    "M-5"
+  ],
+  "training": {
+    "test_loss": 0.0018018699483945966,
+    "test_mae": 0.027968119829893112,
+    "trained_on": "2025-12-30T18:25:56.840345",
+    "lookback_days": 30,
+    "forecast_days": 7
+  },
+  "source_repo": "https://github.com/SandaruEARL/cinnamon-ml-pipeline",
+  "deployment": "GitHub Pages",
+  "lstm_support": "Requires SELECT_TF_OPS in TFLite"
+}

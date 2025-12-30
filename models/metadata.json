@@ -1,0 +1,70 @@
+{
+  "config": {
+    "grades_to_predict": [
+      "Alba",
+      "C-5 Sp",
+      "C-5",
+      "C-4"
+    ],
+    "lookback_days": 30,
+    "forecast_days": 7,
+    "batch_size": 32,
+    "epochs": 50,
+    "learning_rate": 0.001,
+    "validation_split": 0.15,
+    "test_split": 0.15
+  },
+  "feature_cols": [
+    "district_encoded",
+    "grade_encoded",
+    "year",
+    "month",
+    "day",
+    "day_of_week",
+    "week_of_year",
+    "quarter",
+    "month_sin",
+    "month_cos",
+    "day_sin",
+    "day_cos",
+    "average_price_rs_kg",
+    "highest_price_rs_kg",
+    "avg_price_lag_1",
+    "high_price_lag_1",
+    "avg_price_lag_7",
+    "high_price_lag_7",
+    "avg_price_lag_14",
+    "high_price_lag_14",
+    "avg_price_lag_30",
+    "high_price_lag_30",
+    "avg_price_roll_mean_7",
+    "avg_price_roll_std_7",
+    "avg_price_roll_mean_14",
+    "avg_price_roll_std_14",
+    "avg_price_roll_mean_30",
+    "avg_price_roll_std_30",
+    "price_change_7d",
+    "price_change_30d"
+  ],
+  "districts": [
+    "Badulla",
+    "Colombo",
+    "Galle",
+    "Gampaha",
+    "Hambantota",
+    "Kalutara",
+    "Matara",
+    "Monaragala",
+    "Ratnapura"
+  ],
+  "grades": [
+    "Alba",
+    "C-4",
+    "C-5",
+    "C-5 Sp"
+  ],
+  "model_version": "20251230_182556",
+  "trained_on": "2025-12-30T18:25:56.840345",
+  "test_loss": 0.0018018699483945966,
+  "test_mae": 0.027968119829893112
+}
