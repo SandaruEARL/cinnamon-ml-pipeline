@@ -100,63 +100,64 @@ jobs:
     # GENERATE VERSION INFO
     # ========================================
     - name: 📋 Generate Version Info
+      id: version
       run: |
         python scripts/generate_version.py
+        
+        # Export variables for later steps
+        VERSION=$(jq -r '.version' models/version.json)
+        RECORDS=$(jq -r '.records_count' models/version.json)
+        SIZE=$(jq -r '.model_size_kb' models/version.json)
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "records=$RECORDS" >> $GITHUB_OUTPUT
+        echo "size=$SIZE" >> $GITHUB_OUTPUT
+        
         cat models/version.json
     
     # ========================================
-    # ARCHIVE OLD VERSION
+    # ARCHIVE IN PRIVATE REPO
     # ========================================
-    - name: 📦 Archive Model
+    - name: 📦 Archive Model in Private Repo
       run: |
         VERSION=$(jq -r '.version' models/version.json)
+        mkdir -p models/archived
         cp models/latest.tflite models/archived/model_v${VERSION}.tflite
         echo "✓ Archived: model_v${VERSION}.tflite"
     
-    # ========================================
-    # DEPLOY TO GITHUB PAGES
-    # ========================================
-    - name: 🌐 Deploy to GitHub Pages
-      run: |
-        cp models/latest.tflite docs/
-        cp models/version.json docs/
-        cp docs/index.html docs/
-        echo "✓ GitHub Pages ready"
-    
-    # ========================================
-    # COMMIT & PUSH
-    # ========================================
-    - name: 💾 Commit & Push
+    - name: 💾 Commit to Private Repo
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        git add models/ docs/
+        git add models/
         
         VERSION=$(jq -r '.version' models/version.json)
-        git commit -m "🤖 Deploy model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
+        git commit -m "🤖 Archive model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
         
         git push origin main
         
-        echo "✓ Deployed!"
+        echo "✓ Private repo updated!"
     
     # ========================================
-    # SUMMARY
+    # DEPLOY TO PUBLIC REPO
     # ========================================
-    - name: 📊 Summary
-      if: always()
+    - name: 🚀 Deploy to Public Model Repository
+      env:
+        PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
       run: |
-        echo "## 🌿 ML Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
+        # IMPORTANT: Replace YOUR_USERNAME and YOUR_PUBLIC_REPO with your actual values
+        # Example: git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/johndoe/cinnamon-models-public.git
         
-        if [ -f "models/version.json" ]; then
-          VERSION=$(jq -r '.version' models/version.json)
-          RECORDS=$(jq -r '.records_count' models/version.json)
-          SIZE=$(jq -r '.model_size_kb' models/version.json)
-          
-          echo "### ✅ Success" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Records**: $(printf "%'d" $RECORDS)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Model Size**: ${SIZE} KB" >> $GITHUB_STEP_SUMMARY
-        fi
+        echo "📥 Cloning public repository..."
+        git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/SandaruEARL/cinnamon-models.git public-repo
+        
+        cd public-repo
+        
+        # Create models directory
+        mkdir -p models
+        
+        # Copy model and version info
+        echo "📋 Copying model files..."
+        cp ../models/latest.tflite models/
+        cp ../models/version.json models/
