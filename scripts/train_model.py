@@ -16,8 +16,9 @@ import pickle
 import json
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]  # repo root
 DATA_DIR = BASE_DIR / "data"
+DATA_PATH = DATA_DIR / "cinnamon_grades.csv"
 MODELS_DIR = BASE_DIR / "models"
 
 # ============================================================================
@@ -299,9 +300,11 @@ def main():
     os.makedirs('models', exist_ok=True)
     
     csv_path = DATA_DIR / "cinnamon_grades.csv"
+    
+    MODELS_DIR.mkdir(exist_ok=True)
 
     # Load and clean data
-    df = load_and_clean_data(csv_path)
+    df = load_and_clean_data(DATA_PATH)
     
     # Feature engineering
     df = engineer_features(df)
