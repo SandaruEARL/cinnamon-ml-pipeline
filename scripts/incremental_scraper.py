@@ -326,14 +326,18 @@ if __name__ == "__main__":
     print("   Scrapes ONLY last 4 weeks for weekly updates")
     print("="*80)
     
-    existing_csv = "cinnamon_grades.csv"
+    # Look for existing data in parent directory (repository structure)
+    existing_csv = "../data/cinnamon_grades.csv"
     
     if os.path.exists(existing_csv):
         print(f"\n✓ Found existing data: {existing_csv}")
-        choice = input("Merge with existing data? (y/n): ").strip().lower()
-        
-        if choice != 'y':
-            existing_csv = None
+        # Auto-merge in CI environment, prompt otherwise
+        if os.environ.get('CI'):  # GitHub Actions sets CI=true
+            print("🤖 CI mode: Auto-merging with existing data")
+        else:
+            choice = input("Merge with existing data? (y/n): ").strip().lower()
+            if choice != 'y':
+                existing_csv = None
     else:
         print(f"\n⚠️  No existing CSV found at: {existing_csv}")
         existing_csv = None

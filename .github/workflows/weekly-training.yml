@@ -36,16 +36,22 @@ jobs:
     # ========================================
     - name: 🕷️ Scrape Latest Data (Last 4 Weeks)
       run: |
+        # Show existing data info
+        if [ -f "data/cinnamon_grades.csv" ]; then
+           echo "📊 Current dataset: $(wc -l < data/cinnamon_grades.csv) lines"
+        fi
+    
         cd scripts
         python incremental_scraper.py
         cd ..
-        
+    
         # Move updated CSV if exists
         if [ -f "scripts/cinnamon_grades_updated.csv" ]; then
           mv scripts/cinnamon_grades_updated.csv data/cinnamon_grades.csv
-          echo "✓ Data updated"
+          echo "✓ Data merged and updated"
+          echo "📊 Updated dataset: $(wc -l < data/cinnamon_grades.csv) lines"
         else
-          echo "⚠ No new data"
+          echo "⚠ No new data scraped"
         fi
     
     - name: 💾 Commit Updated Dataset
