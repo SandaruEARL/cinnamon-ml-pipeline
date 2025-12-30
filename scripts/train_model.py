@@ -240,44 +240,65 @@ def train_model(model, X_train, y_train, X_val, y_val):
 # STEP 6: CONVERT TO TFLITE
 # ============================================================================
 def convert_to_tflite(model, output_path):
-    """Convert Keras model to TFLite format with LSTM support"""
-    print("📱 Converting to TFLite...")
+    """
+    Convert Keras model to TFLite format with LSTM support.
     
-    # Create converter
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    
-    # CRITICAL: Enable TensorFlow ops for LSTM layers
-    converter.target_spec.supported_ops = [
-        tf.lite.OpsSet.TFLITE_BUILTINS,
-        tf.lite.OpsSet.SELECT_TF_OPS
-    ]
-    
-    # Disable tensor list ops lowering (this is the KEY fix)
-    converter._experimental_lower_tensor_list_ops = False
-    
-    # Allow custom ops as additional safety
-    converter.allow_custom_ops = True
-    
-    # Enable optimizations
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    This version includes:
+    - Proper LSTM support via SELECT_TF_OPS
+    - Disabled tensor list lowering (fixes the TensorListReserve error)
+    - Better error handling
+    - No conflicting optimization flags
+    """
+    print("\n📱 Converting to TFLite...")
     
     try:
-        # Convert
+        # Create converter
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        
+        # CRITICAL FIX FOR LSTM: Enable TensorFlow ops
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,  # Standard TFLite operations
+            tf.lite.OpsSet.SELECT_TF_OPS      # TensorFlow ops (required for LSTM)
+        ]
+        
+        # CRITICAL FIX: Disable tensor list ops lowering
+        # This prevents the TensorListReserve error
+        converter._experimental_lower_tensor_list_ops = False
+        
+        # Note: We're NOT using converter.optimizations or allow_custom_ops
+        # because they can conflict with SELECT_TF_OPS for LSTM models
+        
+        print("   ⚙️  Converter settings:")
+        print("      - TFLITE_BUILTINS: enabled")
+        print("      - SELECT_TF_OPS: enabled (for LSTM)")
+        print("      - Tensor list lowering: disabled")
+        
+        # Perform conversion
         tflite_model = converter.convert()
         
-        # Save
+        # Save the model
         with open(output_path, 'wb') as f:
             f.write(tflite_model)
         
-        print(f"✅ Saved TFLite model: {output_path}")
-        print(f"   Size: {len(tflite_model) / 1024:.2f} KB")
+        size_kb = len(tflite_model) / 1024
+        size_mb = size_kb / 1024
+        
+        print(f"\n✅ Saved TFLite model: {output_path}")
+        print(f"   Size: {size_kb:.2f} KB ({size_mb:.2f} MB)")
+        
+        # Important note about model size
+        if size_mb > 5:
+            print(f"\n   ℹ️  Note: Model is larger because it includes TF ops for LSTM")
+            print(f"      This is normal and required for LSTM layers to work.")
         
         return tflite_model
         
     except Exception as e:
-        print(f"❌ TFLite conversion failed: {str(e)}")
-        print("\n💡 The model was saved as .h5 and can be used with TensorFlow")
-        print("   TFLite conversion may not be critical for your use case")
+        print(f"\n❌ TFLite conversion failed: {str(e)}")
+        print("\n💡 The Keras model (.h5) was saved and can be used with TensorFlow")
+        print("   You can deploy the .h5 model if TFLite isn't strictly required")
+        
+        # Don't raise the exception - allow the script to continue
         return None
 
 # ============================================================================
