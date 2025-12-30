@@ -1,0 +1,157 @@
+name: Weekly ML Training Pipeline
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # Every Monday 00:00 UTC
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: write  # Allow commits
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # ========================================
+    # SETUP
+    # ========================================
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # ========================================
+    # SCRAPE & UPDATE DATA
+    # ========================================
+    - name: 🕷️ Scrape Latest Data (Last 4 Weeks)
+      run: |
+        cd scripts
+        python incremental_scraper.py
+        cd ..
+        
+        # Move updated CSV if exists
+        if [ -f "scripts/cinnamon_grades_updated.csv" ]; then
+          mv scripts/cinnamon_grades_updated.csv data/cinnamon_grades.csv
+          echo "✓ Data updated"
+        else
+          echo "⚠ No new data"
+        fi
+    
+    - name: 💾 Commit Updated Dataset
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        git add data/cinnamon_grades.csv
+        
+        if git diff --staged --quiet; then
+          echo "No data changes"
+        else
+          git commit -m "📊 Update dataset - $(date +'%Y-%m-%d')"
+        fi
+    
+    # ========================================
+    # TRAIN MODEL
+    # ========================================
+    - name: 🧠 Train LSTM Model
+      run: |
+        python scripts/train_model.py
+        
+        if [ ! -f "models/latest.h5" ]; then
+          echo "❌ Training failed"
+          exit 1
+        fi
+        
+        echo "✓ Training complete"
+    
+    # ========================================
+    # CONVERT TO TFLITE
+    # ========================================
+    - name: 📱 Convert to TFLite
+      run: |
+        python scripts/convert_to_tflite.py
+        
+        if [ ! -f "cinnamon_grades_model.tflite" ]; then
+          echo "❌ Conversion failed"
+          exit 1
+        fi
+        
+        mv cinnamon_grades_model.tflite models/latest.tflite
+        echo "✓ Conversion complete"
+    
+    # ========================================
+    # GENERATE VERSION INFO
+    # ========================================
+    - name: 📋 Generate Version Info
+      run: |
+        python scripts/generate_version.py
+        cat models/version.json
+    
+    # ========================================
+    # ARCHIVE OLD VERSION
+    # ========================================
+    - name: 📦 Archive Model
+      run: |
+        VERSION=$(jq -r '.version' models/version.json)
+        cp models/latest.tflite models/archived/model_v${VERSION}.tflite
+        echo "✓ Archived: model_v${VERSION}.tflite"
+    
+    # ========================================
+    # DEPLOY TO GITHUB PAGES
+    # ========================================
+    - name: 🌐 Deploy to GitHub Pages
+      run: |
+        cp models/latest.tflite docs/
+        cp models/version.json docs/
+        cp docs/index.html docs/
+        echo "✓ GitHub Pages ready"
+    
+    # ========================================
+    # COMMIT & PUSH
+    # ========================================
+    - name: 💾 Commit & Push
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        git add models/ docs/
+        
+        VERSION=$(jq -r '.version' models/version.json)
+        git commit -m "🤖 Deploy model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
+        
+        git push origin main
+        
+        echo "✓ Deployed!"
+    
+    # ========================================
+    # SUMMARY
+    # ========================================
+    - name: 📊 Summary
+      if: always()
+      run: |
+        echo "## 🌿 ML Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "models/version.json" ]; then
+          VERSION=$(jq -r '.version' models/version.json)
+          RECORDS=$(jq -r '.records_count' models/version.json)
+          SIZE=$(jq -r '.model_size_kb' models/version.json)
+          
+          echo "### ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Records**: $(printf "%'d" $RECORDS)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model Size**: ${SIZE} KB" >> $GITHUB_STEP_SUMMARY
+        fi
