@@ -149,6 +149,9 @@ jobs:
       env:
         PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
       run: |
+        # IMPORTANT: Replace YOUR_USERNAME and YOUR_PUBLIC_REPO with your actual values
+        # Example: git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/johndoe/cinnamon-models-public.git
+        
         echo "📥 Cloning public repository..."
         git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/SandaruEARL/cinnamon-models.git public-repo
         
@@ -157,53 +160,38 @@ jobs:
         # Create models directory
         mkdir -p models
         
-        # Copy model as latest.tflite
+        # Copy model and version info
         echo "📋 Copying model files..."
-        cp ../models/latest.tflite models/latest.tflite
-        
-        # Calculate hash from actual file
-        MODEL_HASH=$(sha256sum models/latest.tflite | awk '{print $1}')
-        MODEL_SIZE=$(stat -c%s models/latest.tflite)
-        MODEL_SIZE_KB=$(echo "scale=2; $MODEL_SIZE / 1024" | bc)
-        RECORDS=$(jq -r '.records_count' ../models/version.json 2>/dev/null || echo "0")
-        VERSION=$(jq -r '.version' ../models/version.json)
-        
-        # Create clean version.json with correct hash
-        cat > models/version.json << EOF
-        {
-          "version": "$VERSION",
-          "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "model_hash": "$MODEL_HASH",
-          "model_size_bytes": $MODEL_SIZE,
-          "model_size_kb": $MODEL_SIZE_KB,
-          "records_count": $RECORDS
-        }
-        EOF
+        cp ../models/latest.tflite models/
+        cp ../models/version.json models/
 
-        echo "✅ Generated version.json with hash: $MODEL_HASH"
-        cat models/version.json
-
-        # Configure git
+        # Configure git for public repo
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # Commit and push
+        # Stage the files
         git add models/latest.tflite models/version.json
         
+        # Get version for commit message
+        VERSION=$(jq -r '.version' models/version.json)
+        TIMESTAMP=$(date +'%Y-%m-%d %H:%M UTC')
+        
+        # Check if there are changes
         if git diff --staged --quiet; then
           echo "⚠️  No changes to deploy"
         else
-          git commit -m "🚀 Deploy model v${VERSION} - $(date +'%Y-%m-%d %H:%M UTC')"
+          # Commit and push
+          git commit -m "🚀 Deploy model v${VERSION} - ${TIMESTAMP}"
           git push origin main
           
-          echo "✅ Deployment complete!"
-          echo "   CDN: https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite"
+          echo "✅ Public deployment complete!"
+          echo "   Repository: https://github.com/SandaruEARL/cinnamon-models"
         fi
 
     # ========================================
     # VERIFY DEPLOYMENT
     # ========================================
-    - name: ✅ Verify Deployment & Show URLs
+    - name: ✅ Verify Deployment & Show URL
       run: |
         VERSION=$(jq -r '.version' models/version.json)
         
@@ -226,3 +214,4 @@ jobs:
         echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/latest.tflite"
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
