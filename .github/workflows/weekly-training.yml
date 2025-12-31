@@ -187,4 +187,31 @@ jobs:
           echo "✅ Public deployment complete!"
           echo "   Repository: https://github.com/SandaruEARL/cinnamon-models"
         fi
+
+    # ========================================
+    # VERIFY DEPLOYMENT
+    # ========================================
+    - name: ✅ Verify Deployment & Show URLs
+      run: |
+        VERSION=$(jq -r '.version' models/version.json)
+        
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ DEPLOYMENT SUCCESSFUL!"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "📦 Model Version: ${VERSION}"
+        echo ""
+        echo "🔗 Direct URLs (use these in your Flutter app):"
+        echo ""
+        echo "Model URL:"
+        echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite"
+        echo ""
+        echo "Version JSON:"
+        echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json"
+        echo ""
+        echo "Alternative (GitHub Raw):"
+        echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/latest.tflite"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
