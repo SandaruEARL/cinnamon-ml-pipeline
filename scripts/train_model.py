@@ -138,6 +138,7 @@ def create_sequences(df, lookback, forecast):
         'year', 'month', 'day', 'day_of_week', 'week_of_year', 'quarter',
         'month_sin', 'month_cos', 'day_sin', 'day_cos',
         'average_price_rs_kg', 'highest_price_rs_kg',
+        
     ]
     
     # Add lag features
@@ -392,7 +393,33 @@ def main():
     print("\n📈 Evaluating on test set...")
     test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
     print(f"   Test Loss (MSE): {test_loss:.4f}")
-    print(f"   Test MAE: {test_mae:.2f} Rs/kg")
+    # Evaluate on test set
+    
+    print("\n📈 Evaluating on test set...")
+    test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
+
+    # ========== ADD THIS SECTION HERE ==========
+    # UNSCALE MAE to get real price error
+    # Find the index of 'average_price_rs_kg' in feature_cols
+    price_feature_idx = feature_cols.index('average_price_rs_kg')
+
+    # Get the min and max values for the price feature from the scaler
+    price_min = scaler.data_min_[price_feature_idx]
+    price_max = scaler.data_max_[price_feature_idx]
+    price_range = price_max - price_min
+
+    # Convert scaled MAE to actual Rs/kg
+    real_mae = test_mae * price_range
+
+    print(f"   Test Loss (MSE): {test_loss:.4f}")
+    print(f"   Test MAE (scaled): {test_mae:.4f}")
+    print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")  # ← The real error!
+    print(f"   Price range in data: {price_min:.2f} - {price_max:.2f} Rs/kg")
+    
+    # ========== END OF ADDITION ==========
+
+    # Save Keras model
+    model.save('models/cinnamon_grades_model.h5')
     
     # Save Keras model
     model.save('models/cinnamon_grades_model.h5')
