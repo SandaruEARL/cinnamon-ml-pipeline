@@ -36,7 +36,6 @@ jobs:
     # ========================================
     - name: 🕷️ Scrape Latest Data (Last 4 Weeks)
       run: |
-        # Show existing data info
         if [ -f "data/cinnamon_grades.csv" ]; then
            echo "📊 Current dataset: $(wc -l < data/cinnamon_grades.csv) lines"
         fi
@@ -45,7 +44,6 @@ jobs:
         python incremental_scraper.py
         cd ..
     
-        # Move updated CSV if exists
         if [ -f "scripts/cinnamon_grades_updated.csv" ]; then
           mv scripts/cinnamon_grades_updated.csv data/cinnamon_grades.csv
           echo "✓ Data merged and updated"
@@ -93,51 +91,46 @@ jobs:
           exit 1
         fi
         
+        # Use consistent naming: latest.tflite
         mv cinnamon_grades_model.tflite models/latest.tflite
         echo "✓ Conversion complete"
     
     # ========================================
-    # GENERATE VERSION INFO
+    # EXPORT FOR FLUTTER
     # ========================================
-    - name: 📋 Generate Version Info
-      id: version
+    - name: 📤 Export Preprocessing for Flutter
       run: |
-        python scripts/generate_version.py
+        python scripts/export_preprocessing_to_json.py
         
-        # Export variables for later steps
-        VERSION=$(jq -r '.version' models/version.json)
-        RECORDS=$(jq -r '.records_count' models/version.json)
-        SIZE=$(jq -r '.model_size_kb' models/version.json)
+        if [ ! -f "models/preprocessing.json" ] || [ ! -f "models/recent_data.csv" ]; then
+          echo "❌ Export failed"
+          exit 1
+        fi
         
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "records=$RECORDS" >> $GITHUB_OUTPUT
-        echo "size=$SIZE" >> $GITHUB_OUTPUT
-        
-        cat models/version.json
+        echo "✓ Export complete"
     
     # ========================================
     # ARCHIVE IN PRIVATE REPO
     # ========================================
     - name: 📦 Archive Model in Private Repo
       run: |
-        VERSION=$(jq -r '.version' models/version.json)
+        VERSION=$(date -u +%Y%m%d_%H%M%S)
         mkdir -p models/archived
         cp models/latest.tflite models/archived/model_v${VERSION}.tflite
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "✓ Archived: model_v${VERSION}.tflite"
+      id: archive
     
     - name: 💾 Commit to Private Repo
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # Pull latest changes first
         git pull origin main
-        
         git add models/
         
-        VERSION=$(jq -r '.version' models/version.json)
+        VERSION=${{ steps.archive.outputs.version }}
         git commit -m "🤖 Archive model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
-        
         git push origin main
         
         echo "✓ Private repo updated!"
@@ -149,51 +142,76 @@ jobs:
       env:
         PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
       run: |
-        # IMPORTANT: Replace YOUR_USERNAME and YOUR_PUBLIC_REPO with your actual values
-        # Example: git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/johndoe/cinnamon-models-public.git
-        
         echo "📥 Cloning public repository..."
         git clone https://x-access-token:${PUBLIC_REPO_TOKEN}@github.com/SandaruEARL/cinnamon-models.git public-repo
         
         cd public-repo
-        
-        # Create models directory
         mkdir -p models
         
-        # Copy model and version info
+        # Copy model
         echo "📋 Copying model files..."
-        cp ../models/latest.tflite models/
-        cp ../models/version.json models/
-
-        # Configure git for public repo
+        cp ../models/latest.tflite models/latest.tflite
+        
+        # Calculate hash and metadata from the actual file
+        MODEL_HASH=$(sha256sum models/latest.tflite | awk '{print $1}')
+        MODEL_SIZE=$(stat -c%s models/latest.tflite)
+        MODEL_SIZE_KB=$(echo "scale=2; $MODEL_SIZE / 1024" | bc)
+        VERSION=${{ steps.archive.outputs.version }}
+        
+        # Get records count if available
+        RECORDS=0
+        if [ -f "../data/cinnamon_grades.csv" ]; then
+          RECORDS=$(tail -n +2 ../data/cinnamon_grades.csv | wc -l)
+        fi
+        
+        # Create version.json with correct hash
+        cat > models/version.json << EOF
+        {
+          "version": "$VERSION",
+          "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "model_hash": "$MODEL_HASH",
+          "model_size_bytes": $MODEL_SIZE,
+          "model_size_kb": $MODEL_SIZE_KB,
+          "records_count": $RECORDS
+        }
+        EOF
+        
+        echo "✅ Generated version.json"
+        echo "   Hash: $MODEL_HASH"
+        echo "   Size: $MODEL_SIZE_KB KB"
+        cat models/version.json
+        
+        # Configure git
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # Stage the files
+        # Commit and push
         git add models/latest.tflite models/version.json
         
-        # Get version for commit message
-        VERSION=$(jq -r '.version' models/version.json)
-        TIMESTAMP=$(date +'%Y-%m-%d %H:%M UTC')
-        
-        # Check if there are changes
         if git diff --staged --quiet; then
           echo "⚠️  No changes to deploy"
         else
-          # Commit and push
-          git commit -m "🚀 Deploy model v${VERSION} - ${TIMESTAMP}"
+          git commit -m "🚀 Deploy model v${VERSION} - $(date +'%Y-%m-%d %H:%M UTC')"
           git push origin main
           
-          echo "✅ Public deployment complete!"
-          echo "   Repository: https://github.com/SandaruEARL/cinnamon-models"
+          echo "✅ Deployment complete!"
         fi
-
+        
+        cd ..
+    
     # ========================================
-    # VERIFY DEPLOYMENT
+    # VERIFY CDN PROPAGATION
     # ========================================
-    - name: ✅ Verify Deployment & Show URL
+    - name: 🧹 Purge jsdelivr CDN Cache
+      uses: gacts/purge-jsdelivr-cache@v1
+      with:
+        url: |
+          https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json
+          https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite
+    
+    - name: ✅ Verify Deployment
       run: |
-        VERSION=$(jq -r '.version' models/version.json)
+        VERSION=${{ steps.archive.outputs.version }}
         
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -202,16 +220,36 @@ jobs:
         echo ""
         echo "📦 Model Version: ${VERSION}"
         echo ""
-        echo "🔗 Direct URLs (use these in your Flutter app):"
-        echo ""
-        echo "Model URL:"
+        echo "🔗 CDN URLs (Primary):"
         echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite"
-        echo ""
-        echo "Version JSON:"
         echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json"
         echo ""
-        echo "Alternative (GitHub Raw):"
+        echo "🔗 GitHub Raw (Fallback):"
         echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/latest.tflite"
+        echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/version.json"
         echo ""
+        echo "✅ CDN cache purged"
+        echo "⏳ Allow 30-60 seconds for global propagation..."
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
+        # Wait for CDN propagation
+        sleep 60
+        
+        # Verify version.json is accessible
+        echo ""
+        echo "🔍 Testing CDN access..."
+        CACHE_BUSTER=$(date +%s)
+        if curl -f -s "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json?_=$CACHE_BUSTER" > /dev/null; then
+          echo "✅ version.json accessible via CDN"
+          
+          # Verify it's the correct version
+          REMOTE_VERSION=$(curl -s "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json?_=$CACHE_BUSTER" | jq -r '.version')
+          if [ "$REMOTE_VERSION" == "$VERSION" ]; then
+            echo "✅ CDN serving correct version: $REMOTE_VERSION"
+          else
+            echo "⚠️  CDN version mismatch: $REMOTE_VERSION (expected $VERSION)"
+            echo "   This is normal, CDN will update within 2-3 minutes"
+          fi
+        else
+          echo "⚠️  CDN not ready yet (this is normal)"
+        fi
