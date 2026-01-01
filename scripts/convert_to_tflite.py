@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-TFLite Conversion Script - OPTIMIZED VERSION
-Converts LSTM models using ONLY built-in TFLite ops (no Flex delegate needed)
-This results in smaller app size and faster inference.
+FIXED TFLite Conversion Script
+Multiple strategies to convert LSTM models to TFLite
 """
 
 import tensorflow as tf
@@ -11,228 +10,287 @@ import numpy as np
 import os
 import sys
 
-def convert_to_tflite_optimized(model_path, output_path):
+def convert_strategy_1_concrete_function(model, output_path):
     """
-    Convert Keras model to TFLite using ONLY built-in ops.
-    
-    This approach:
-    - Uses only TFLITE_BUILTINS (no SELECT_TF_OPS)
-    - Smaller app size (~500KB vs ~10MB)
-    - Faster inference (2-5x speedup)
-    - Better battery life
-    - Works on all devices
-    
-    Args:
-        model_path: Path to the saved Keras model (.h5)
-        output_path: Path where the TFLite model will be saved (.tflite)
+    Strategy 1: Use concrete function with fixed batch size
+    This often works when standard conversion fails
     """
-    print(f"📱 Converting {model_path} to TFLite (Optimized - No Flex)...")
+    print("\n🔄 Strategy 1: Concrete function with fixed shape...")
     
-    # Load the Keras model
     try:
-        model = keras.models.load_model(model_path)
-        print(f"✓ Loaded Keras model from {model_path}")
-        print(f"  Input shape: {model.input_shape}")
-        print(f"  Output shape: {model.output_shape}")
-    except Exception as e:
-        print(f"❌ Failed to load model: {str(e)}")
-        sys.exit(1)
-    
-    # Create TFLite converter
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    
-    # METHOD 1: Use ONLY built-in TFLite ops (RECOMMENDED)
-    converter.target_spec.supported_ops = [
-        tf.lite.OpsSet.TFLITE_BUILTINS  # Only standard TFLite ops
-    ]
-    
-    # Enable optimizations for better performance and smaller size
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    
-    # CRITICAL: Explicitly set this to True to convert LSTM properly
-    converter._experimental_lower_tensor_list_ops = True
-    
-    # Optional: Set quantization (makes model even smaller and faster)
-    # Uncomment if you want to use quantization:
-    # converter.representative_dataset = representative_dataset_gen
-    # converter.target_spec.supported_types = [tf.float16]  # or tf.int8
-    
-    # Convert the model
-    try:
-        print("\n🔄 Converting model (this may take a moment)...")
-        tflite_model = converter.convert()
-        print("✓ Model converted successfully using built-in ops only!")
-    except Exception as e:
-        print(f"\n❌ Conversion failed with built-in ops only.")
-        print(f"   Error: {str(e)}")
-        print("\n🔄 Attempting fallback conversion with dynamic range quantization...")
+        # Get model's input shape (excluding batch dimension)
+        input_shape = model.input_shape[1:]  # e.g., (30, 30)
         
-        # Fallback: Try with dynamic range quantization
-        try:
-            converter.optimizations = [tf.lite.Optimize.DEFAULT]
-            converter._experimental_lower_tensor_list_ops = True
-            tflite_model = converter.convert()
-            print("✓ Model converted successfully with quantization!")
-        except Exception as e2:
-            print(f"❌ Fallback also failed: {str(e2)}")
-            print("\n💡 SOLUTION: Your model architecture needs adjustment.")
-            print("   The LSTM layer configuration isn't compatible with standard TFLite ops.")
-            print("   Options:")
-            print("   1. Use the Flex delegate (add SELECT_TF_OPS) - larger app size")
-            print("   2. Modify your model architecture - see suggestions below")
-            sys.exit(1)
-    
-    # Save the TFLite model
-    try:
+        # Create a concrete function with batch size = 1
+        @tf.function(input_signature=[
+            tf.TensorSpec(shape=[1] + list(input_shape), dtype=tf.float32)
+        ])
+        def model_fn(x):
+            return model(x, training=False)
+        
+        concrete_func = model_fn.get_concrete_function()
+        
+        # Convert using concrete function
+        converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
+        
+        # Try with ONLY built-in ops first
+        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS]
+        converter._experimental_lower_tensor_list_ops = True
+        
+        tflite_model = converter.convert()
+        
         with open(output_path, 'wb') as f:
             f.write(tflite_model)
         
-        # Get file size
-        size_bytes = os.path.getsize(output_path)
-        size_kb = size_bytes / 1024
-        size_mb = size_kb / 1024
+        size_kb = len(tflite_model) / 1024
+        print(f"✅ SUCCESS with Strategy 1!")
+        print(f"   File: {output_path}")
+        print(f"   Size: {size_kb:.2f} KB")
+        print(f"   ✓ No Flex ops needed!")
         
-        print(f"\n✅ TFLite model saved: {output_path}")
-        print(f"   Size: {size_kb:.2f} KB ({size_mb:.2f} MB)")
-        
-        # Test the model
-        test_model(output_path, model.input_shape)
+        return True
         
     except Exception as e:
-        print(f"❌ Failed to save model: {str(e)}")
-        sys.exit(1)
-    
-    return tflite_model
+        print(f"❌ Strategy 1 failed: {str(e)[:150]}")
+        return False
 
 
-def test_model(tflite_path, input_shape):
+def convert_strategy_2_unroll_lstm(model, output_path):
     """
-    Test the converted TFLite model to ensure it works.
+    Strategy 2: Rebuild model with unrolled LSTM
+    This forces static graph execution
     """
-    print("\n🧪 Testing TFLite model...")
+    print("\n🔄 Strategy 2: Unrolled LSTM (static execution)...")
     
     try:
-        # Load TFLite model
+        # Clone model architecture
+        config = model.get_config()
+        
+        # Modify LSTM layers to use unroll=True
+        for i, layer_config in enumerate(config['layers']):
+            if layer_config['class_name'] == 'LSTM':
+                layer_config['config']['unroll'] = True
+                print(f"   ✓ Set unroll=True for LSTM layer {i}")
+        
+        # Rebuild model
+        new_model = keras.Model.from_config(config)
+        new_model.set_weights(model.get_weights())
+        
+        # Convert
+        converter = tf.lite.TFLiteConverter.from_keras_model(new_model)
+        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS]
+        converter._experimental_lower_tensor_list_ops = True
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        
+        tflite_model = converter.convert()
+        
+        with open(output_path, 'wb') as f:
+            f.write(tflite_model)
+        
+        size_kb = len(tflite_model) / 1024
+        print(f"✅ SUCCESS with Strategy 2!")
+        print(f"   File: {output_path}")
+        print(f"   Size: {size_kb:.2f} KB")
+        print(f"   ✓ No Flex ops needed!")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Strategy 2 failed: {str(e)[:150]}")
+        return False
+
+
+def convert_strategy_3_savedmodel(model, output_path):
+    """
+    Strategy 3: Convert via SavedModel format
+    Sometimes this path has better LSTM support
+    """
+    print("\n🔄 Strategy 3: Via SavedModel format...")
+    
+    try:
+        import tempfile
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Save as SavedModel
+            saved_model_dir = os.path.join(tmpdir, 'saved_model')
+            tf.saved_model.save(model, saved_model_dir)
+            
+            # Convert from SavedModel
+            converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+            converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS]
+            converter._experimental_lower_tensor_list_ops = True
+            
+            tflite_model = converter.convert()
+            
+            with open(output_path, 'wb') as f:
+                f.write(tflite_model)
+            
+            size_kb = len(tflite_model) / 1024
+            print(f"✅ SUCCESS with Strategy 3!")
+            print(f"   File: {output_path}")
+            print(f"   Size: {size_kb:.2f} KB")
+            print(f"   ✓ No Flex ops needed!")
+            
+            return True
+            
+    except Exception as e:
+        print(f"❌ Strategy 3 failed: {str(e)[:150]}")
+        return False
+
+
+def convert_strategy_4_flex_ops(model, output_path):
+    """
+    Strategy 4: Accept Flex ops (fallback)
+    Works reliably but increases app size
+    """
+    print("\n🔄 Strategy 4: Using Flex delegate (fallback)...")
+    
+    try:
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        
+        # Enable both built-in and TensorFlow ops
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,
+            tf.lite.OpsSet.SELECT_TF_OPS
+        ]
+        
+        # Disable tensor list lowering (required for Flex)
+        converter._experimental_lower_tensor_list_ops = False
+        
+        tflite_model = converter.convert()
+        
+        with open(output_path, 'wb') as f:
+            f.write(tflite_model)
+        
+        size_kb = len(tflite_model) / 1024
+        print(f"✅ SUCCESS with Strategy 4!")
+        print(f"   File: {output_path}")
+        print(f"   Size: {size_kb:.2f} KB")
+        print(f"   ⚠️  Requires Flex delegate in Flutter app")
+        print(f"   ⚠️  Add to android/app/build.gradle:")
+        print(f"       implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.11.0'")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Strategy 4 failed: {str(e)[:150]}")
+        return False
+
+
+def test_tflite_model(tflite_path, input_shape):
+    """Test the converted TFLite model"""
+    print(f"\n🧪 Testing TFLite model...")
+    
+    try:
         interpreter = tf.lite.Interpreter(model_path=tflite_path)
         interpreter.allocate_tensors()
         
-        # Get input/output details
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
         
-        print(f"✓ Model loaded successfully")
-        print(f"  Input: {input_details[0]['shape']}")
-        print(f"  Output: {output_details[0]['shape']}")
+        print(f"   ✓ Input shape: {input_details[0]['shape']}")
+        print(f"   ✓ Output shape: {output_details[0]['shape']}")
         
-        # Create dummy input matching the expected shape
-        # Remove batch dimension for the test input
-        test_input_shape = list(input_details[0]['shape'])
-        test_input = np.random.random(test_input_shape).astype(np.float32)
+        # Create test input
+        test_input = np.random.random(input_details[0]['shape']).astype(np.float32)
         
         # Run inference
         interpreter.set_tensor(input_details[0]['index'], test_input)
         interpreter.invoke()
         output = interpreter.get_tensor(output_details[0]['index'])
         
-        print(f"✓ Test inference successful")
-        print(f"  Output shape: {output.shape}")
-        print(f"  Sample output: {output[0][:5]}...")  # Show first 5 values
+        print(f"   ✓ Test inference successful!")
+        print(f"   ✓ Output sample: {output[0][:5]}")
         
-        print("\n✅ Model is working correctly!")
+        return True
         
     except Exception as e:
-        print(f"❌ Model test failed: {str(e)}")
-        print("   The model was converted but may not work correctly.")
+        print(f"   ❌ Test failed: {e}")
+        return False
 
 
-def print_model_architecture_tips():
+def convert_to_tflite_multi_strategy(model_path, output_path):
     """
-    Print tips for making LSTM models TFLite-compatible without Flex ops.
+    Try multiple conversion strategies in order of preference:
+    1. Concrete function (no Flex, optimized)
+    2. Unrolled LSTM (no Flex, static)
+    3. SavedModel path (no Flex, alternative)
+    4. Flex delegate (works but larger)
     """
-    print("\n" + "="*70)
-    print("💡 TIPS FOR TFLITE-COMPATIBLE LSTM MODELS")
     print("="*70)
-    print("""
-If conversion fails, your LSTM model needs these adjustments:
-
-1. **Use return_sequences=False** for the last LSTM layer
-   ❌ LSTM(64, return_sequences=True)
-   ✅ LSTM(64, return_sequences=False)
-
-2. **Use time_major=False** (default)
-   ✅ LSTM(64, time_major=False)
-
-3. **Use fixed sequence length** (you already have this with 30 days)
-   ✅ Input shape: (batch, 30, features)
-
-4. **Avoid:** 
-   - Masking layers
-   - Stateful LSTMs (stateful=True)
-   - Bidirectional LSTMs with merge_mode='concat'
-   - Custom LSTM cells
-
-5. **LSTM-friendly architecture:**
-   ```python
-   model = keras.Sequential([
-       keras.layers.Input(shape=(30, 30)),
-       keras.layers.LSTM(64, return_sequences=True),  # Intermediate layers
-       keras.layers.LSTM(32, return_sequences=False), # Last LSTM layer
-       keras.layers.Dense(14)
-   ])
-   ```
-
-6. **If you must use Flex ops:**
-   - Add to pubspec.yaml: tflite_flutter: ^0.10.4
-   - Add to build.gradle: implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.11.0'
-   - App size will increase by ~8-10 MB
-""")
-    print("="*70 + "\n")
+    print("🔧 TFLite Multi-Strategy Converter")
+    print("="*70)
+    
+    # Load model
+    print(f"\n📂 Loading model: {model_path}")
+    try:
+        model = keras.models.load_model(model_path)
+        print(f"   ✓ Model loaded successfully")
+        print(f"   ✓ Input shape: {model.input_shape}")
+        print(f"   ✓ Output shape: {model.output_shape}")
+    except Exception as e:
+        print(f"   ❌ Failed to load model: {e}")
+        return False
+    
+    # Try strategies in order
+    strategies = [
+        ("Concrete Function (Best)", convert_strategy_1_concrete_function),
+        ("Unrolled LSTM", convert_strategy_2_unroll_lstm),
+        ("SavedModel Path", convert_strategy_3_savedmodel),
+        ("Flex Delegate (Fallback)", convert_strategy_4_flex_ops),
+    ]
+    
+    for strategy_name, strategy_func in strategies:
+        print(f"\n{'='*70}")
+        print(f"Trying: {strategy_name}")
+        print(f"{'='*70}")
+        
+        success = strategy_func(model, output_path)
+        
+        if success:
+            # Test the model
+            if test_tflite_model(output_path, model.input_shape):
+                print("\n" + "="*70)
+                print(f"✅ CONVERSION SUCCESSFUL using {strategy_name}!")
+                print("="*70)
+                return True
+            else:
+                print(f"⚠️  Model converted but failed testing, trying next strategy...")
+    
+    # All strategies failed
+    print("\n" + "="*70)
+    print("❌ ALL CONVERSION STRATEGIES FAILED")
+    print("="*70)
+    print("\nPossible solutions:")
+    print("1. Check your TensorFlow version (recommend 2.11+)")
+    print("2. Try simplifying the model architecture")
+    print("3. Use the .h5 model directly (not TFLite)")
+    print("4. Contact support with the error logs above")
+    
+    return False
 
 
 def main():
-    """Main execution function"""
+    """Main execution"""
     
-    # Define paths
-    keras_model_path = "models/cinnamon_price_predictor.h5"  # Your price prediction model
-    tflite_output_path = "price_predictor_optimized.tflite"
+    # Paths
+    model_path = "models/cinnamon_grades_model.h5"
+    output_path = "models/cinnamon_grades_model.tflite"
     
-    # Check if Keras model exists
-    if not os.path.exists(keras_model_path):
-        print(f"❌ Keras model not found: {keras_model_path}")
-        print("   Please provide the correct path to your trained model")
-        
-        # Try alternative paths
-        alt_paths = [
-            "models/cinnamon_grades_model.h5",
-            "cinnamon_price_predictor.h5",
-            "price_predictor.h5"
-        ]
-        
-        for alt_path in alt_paths:
-            if os.path.exists(alt_path):
-                print(f"   Found model at: {alt_path}")
-                keras_model_path = alt_path
-                break
-        else:
-            sys.exit(1)
+    # Check if model exists
+    if not os.path.exists(model_path):
+        print(f"❌ Model not found: {model_path}")
+        print("   Please train the model first using the training script")
+        sys.exit(1)
     
-    # Convert the model
-    try:
-        convert_to_tflite_optimized(keras_model_path, tflite_output_path)
-        
-        print("\n" + "="*70)
-        print("🎉 TFLite OPTIMIZED conversion completed successfully!")
-        print("="*70)
-        print(f"\n✅ Your model is now mobile-optimized:")
-        print(f"   - No Flex delegate needed")
-        print(f"   - Smaller app size")
-        print(f"   - Faster inference")
-        print(f"   - Better battery life")
-        print(f"\n📁 Output file: {tflite_output_path}")
-        
-    except Exception as e:
-        print(f"\n❌ Conversion failed: {str(e)}")
-        print_model_architecture_tips()
+    # Convert
+    success = convert_to_tflite_multi_strategy(model_path, output_path)
+    
+    if success:
+        print("\n🎉 You can now use the TFLite model in your Flutter app!")
+        sys.exit(0)
+    else:
+        print("\n⚠️  TFLite conversion failed, but you can still use the .h5 model")
         sys.exit(1)
 
 
