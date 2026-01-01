@@ -200,6 +200,32 @@ jobs:
         cd ..
     
     # ========================================
+    # CREATE GITHUB RELEASE
+    # ========================================
+    - name: 🏷️ Create GitHub Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+      run: |
+        VERSION=${{ steps.archive.outputs.version }}
+        RELEASE_TAG="v${VERSION}"
+        
+        cd public-repo
+        
+        # Only create release if there were changes
+        if git diff HEAD~1 HEAD --quiet models/latest.tflite 2>/dev/null; then
+          echo "⚠️ No model changes, skipping release"
+        else
+          gh release create "$RELEASE_TAG" \
+            models/latest.tflite \
+            --title "Model ${VERSION}" \
+            --notes "Model trained on $(date -u +"%Y-%m-%d")" \
+            --repo SandaruEARL/cinnamon-models \
+            || echo "Release already exists"
+        fi
+        
+        cd ..
+    
+    # ========================================
     # VERIFY CDN PROPAGATION
     # ========================================
     - name: 🧹 Purge jsdelivr CDN Cache
