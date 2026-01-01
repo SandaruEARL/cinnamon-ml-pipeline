@@ -26,10 +26,10 @@ MODELS_DIR = BASE_DIR / "models"
 # ============================================================================
 CONFIG = {
     'grades_to_predict': ['Alba', 'C-5 Sp', 'C-5', 'C-4'],
-    'lookback_days': 30,      # Use past 30 days
+    'lookback_days': 60,      # Use past 30 days
     'forecast_days': 7,        # Predict 7 days ahead
     'batch_size': 32,
-    'epochs': 50,
+    'epochs': 100,
     'learning_rate': 0.001,
     'validation_split': 0.15,
     'test_split': 0.15
@@ -187,12 +187,12 @@ def build_model(input_shape, output_shape):
     print("\n🏗️  Building LSTM model...")
     
     model = keras.Sequential([
-        layers.LSTM(128, return_sequences=True, input_shape=input_shape),
+        layers.LSTM(256, return_sequences=True, input_shape=input_shape),
         layers.Dropout(0.2),
-        layers.LSTM(64, return_sequences=False),
+        layers.LSTM(128, return_sequences=False),
         layers.Dropout(0.2),
+        layers.Dense(128, activation='relu'),
         layers.Dense(64, activation='relu'),
-        layers.Dense(32, activation='relu'),
         layers.Dense(output_shape)
     ])
     
