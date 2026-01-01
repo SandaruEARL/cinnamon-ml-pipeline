@@ -148,9 +148,11 @@ jobs:
         cd public-repo
         mkdir -p models
         
-        # Copy model
+        # Copy ALL required files
         echo "📋 Copying model files..."
         cp ../models/latest.tflite models/latest.tflite
+        cp ../models/preprocessing.json models/preprocessing.json
+        cp ../models/recent_data.csv models/recent_data.csv
         
         # Calculate hash and metadata from the actual file
         MODEL_HASH=$(sha256sum models/latest.tflite | awk '{print $1}')
@@ -186,7 +188,7 @@ jobs:
         git config --local user.name "github-actions[bot]"
         
         # Commit and push
-        git add models/latest.tflite models/version.json
+        git add models/
         
         if git diff --staged --quiet; then
           echo "⚠️  No changes to deploy"
@@ -217,6 +219,8 @@ jobs:
         else
           gh release create "$RELEASE_TAG" \
             models/latest.tflite \
+            models/preprocessing.json \
+            models/recent_data.csv \
             --title "Model ${VERSION}" \
             --notes "Model trained on $(date -u +"%Y-%m-%d")" \
             --repo SandaruEARL/cinnamon-models \
@@ -234,6 +238,8 @@ jobs:
         url: |
           https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json
           https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite
+          https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/preprocessing.json
+          https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/recent_data.csv
     
     - name: ✅ Verify Deployment
       run: |
@@ -249,10 +255,14 @@ jobs:
         echo "🔗 CDN URLs (Primary):"
         echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/latest.tflite"
         echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/version.json"
+        echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/preprocessing.json"
+        echo "https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/recent_data.csv"
         echo ""
         echo "🔗 GitHub Raw (Fallback):"
         echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/latest.tflite"
         echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/version.json"
+        echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/preprocessing.json"
+        echo "https://raw.githubusercontent.com/SandaruEARL/cinnamon-models/main/models/recent_data.csv"
         echo ""
         echo "✅ CDN cache purged"
         echo "⏳ Allow 30-60 seconds for global propagation..."
