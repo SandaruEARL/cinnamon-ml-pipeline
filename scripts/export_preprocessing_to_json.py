@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Export preprocessing artifacts to JSON for Flutter/Dart consumption
+Now includes national benchmark feature information
 """
 
 import pickle
@@ -29,6 +30,11 @@ def export_to_json():
     with open(MODELS_DIR / 'metadata.json', 'r') as f:
         metadata = json.load(f)
     
+    # Check for national features
+    has_national = metadata.get('has_national_features', False)
+    feature_cols = metadata['feature_cols']
+    national_features = [col for col in feature_cols if 'national' in col.lower() or 'nat_' in col or 'vs_national' in col or 'gap_' in col]
+    
     # Export scaler parameters
     print("   Converting scaler parameters...")
     preprocessing = {
@@ -45,11 +51,16 @@ def export_to_json():
             'classes': grade_encoder.classes_.tolist(),
             'mapping': {grade: int(i) for i, grade in enumerate(grade_encoder.classes_)}
         },
-        'feature_columns': metadata['feature_cols'],
+        'feature_columns': feature_cols,
         'config': metadata['config'],
-        'num_features': len(metadata['feature_cols']),
+        'num_features': len(feature_cols),
         'lookback_days': metadata['config']['lookback_days'],
-        'forecast_days': metadata['config']['forecast_days']
+        'forecast_days': metadata['config']['forecast_days'],
+        
+        # NEW: National benchmark feature info
+        'has_national_features': has_national,
+        'national_features': national_features,
+        'national_feature_count': len(national_features)
     }
     
     # Save to JSON
@@ -61,7 +72,14 @@ def export_to_json():
     print(f"   Scaler: {len(scaler.data_min_)} features")
     print(f"   Districts: {len(district_encoder.classes_)}")
     print(f"   Grades: {len(grade_encoder.classes_)}")
-    print(f"   Feature columns: {len(metadata['feature_cols'])}")
+    print(f"   Feature columns: {len(feature_cols)}")
+    
+    # Print national feature info
+    if has_national:
+        print(f"   ✨ National features: {len(national_features)}")
+        print(f"      Features: {', '.join(national_features[:5])}...")
+    else:
+        print(f"   ℹ️  No national features (using older dataset)")
     
     return preprocessing
 
@@ -75,11 +93,14 @@ def export_recent_data():
     data_path = BASE_DIR / "data" / "cinnamon_grades.csv"
     df = pd.read_csv(data_path)
     
+    # Check for national columns
+    has_national = 'national_highest_price_rs_kg' in df.columns
+    
     # Convert date
     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
     
-    # Remove "Average Price" rows
-    df = df[df['district'] != 'Average Price'].copy()
+    # Remove "National" rows (they're stored in separate columns now)
+    df = df[df['district'].str.lower() != 'national'].copy()
     
     # Sort by date
     df = df.sort_values('date')
@@ -97,11 +118,21 @@ def export_recent_data():
     print(f"   Grades: {recent['grade'].nunique()}")
     print(f"   Date range: {recent['date'].min()} to {recent['date'].max()}")
     
+    if has_national:
+        print(f"   ✨ Includes national benchmark columns")
+        # Show sample of national values
+        national_cols = ['national_highest_price_rs_kg', 'national_average_price_rs_kg']
+        non_null_national = recent[national_cols].notna().any(axis=1).sum()
+        print(f"   Records with national data: {non_null_national}/{len(recent)}")
+    else:
+        print(f"   ℹ️  No national benchmark data (older dataset)")
+    
     return recent
 
 def main():
     print("=" * 70)
     print("📦 EXPORTING PREPROCESSING ARTIFACTS FOR FLUTTER")
+    print("   (With National Benchmark Feature Support)")
     print("=" * 70)
     
     # Export preprocessing parameters
@@ -116,6 +147,13 @@ def main():
     print("\n📦 Files created:")
     print("   - models/preprocessing.json")
     print("   - models/recent_data.csv")
+    
+    if preprocessing['has_national_features']:
+        print("\n✨ National Features Summary:")
+        print(f"   Total features: {preprocessing['num_features']}")
+        print(f"   National-related: {preprocessing['national_feature_count']}")
+        print(f"   Feature names: {', '.join(preprocessing['national_features'][:5])}...")
+    
     print("\n🚀 These files should be deployed to your public repository")
 
 if __name__ == "__main__":

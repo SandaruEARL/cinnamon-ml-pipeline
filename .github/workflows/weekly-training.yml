@@ -38,7 +38,7 @@ jobs:
     - name: 🕷️ Scrape Latest Data (Last 4 Weeks)
       run: |
         if [ -f "data/cinnamon_grades.csv" ]; then
-           echo "📊 Current dataset: $(wc -l < data/cinnamon_grades.csv) lines"
+           echo " Current dataset: $(wc -l < data/cinnamon_grades.csv) lines"
         fi
     
         cd scripts
@@ -48,7 +48,7 @@ jobs:
         if [ -f "scripts/cinnamon_grades_updated.csv" ]; then
           mv scripts/cinnamon_grades_updated.csv data/cinnamon_grades.csv
           echo "✓ Data merged and updated"
-          echo "📊 Updated dataset: $(wc -l < data/cinnamon_grades.csv) lines"
+          echo " Updated dataset: $(wc -l < data/cinnamon_grades.csv) lines"
         else
           echo "⚠ No new data scraped"
         fi
@@ -63,7 +63,7 @@ jobs:
         if git diff --staged --quiet; then
           echo "No data changes"
         else
-          git commit -m "📊 Update dataset - $(date +'%Y-%m-%d')"
+          git commit -m " Update dataset - $(date +'%Y-%m-%d')"
         fi
     
     # ========================================
@@ -131,7 +131,7 @@ jobs:
         git add models/
         
         VERSION=${{ steps.archive.outputs.version }}
-        git commit -m "🤖 Archive model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
+        git commit -m " Archive model v${VERSION} - $(date +'%Y-%m-%d %H:%M')" || echo "No changes"
         git push origin main
         
         echo "✓ Private repo updated!"
@@ -205,7 +205,7 @@ jobs:
     # ========================================
     # CREATE GITHUB RELEASE
     # ========================================
-    - name: 🏷️ Create GitHub Release
+    - name: Create GitHub Release
       env:
         GITHUB_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
       run: |
@@ -233,7 +233,7 @@ jobs:
     # ========================================
     # VERIFY CDN PROPAGATION
     # ========================================
-    - name: 🧹 Purge jsdelivr CDN Cache
+    - name: Purge jsdelivr CDN Cache
       uses: gacts/purge-jsdelivr-cache@v1
       with:
         url: |
@@ -242,7 +242,7 @@ jobs:
           https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/preprocessing.json
           https://cdn.jsdelivr.net/gh/SandaruEARL/cinnamon-models@main/models/recent_data.csv
     
-    - name: ✅ Verify Deployment
+    - name: Verify Deployment
       run: |
         VERSION=${{ steps.archive.outputs.version }}
         
