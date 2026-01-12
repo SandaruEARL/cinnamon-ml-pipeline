@@ -25,7 +25,13 @@ MODELS_DIR = BASE_DIR / "models"
 # CONFIGURATION
 # ============================================================================
 CONFIG = {
-    'grades_to_predict': ['Alba', 'C-5 Sp', 'C-5', 'C-4'],
+    'grades_to_predict': [
+        'Alba', 
+        'C-4', 'C-5', 'C-5 Sp',
+        'M-4', 'M-5',
+        'H-1', 'H-2',
+        'H-Faq', 'Heen', 'Gorosu'
+    ], 
     'lookback_days': 30,      # Use past 30 days
     'forecast_days': 7,        # Predict 7 days ahead
     'batch_size': 32,
