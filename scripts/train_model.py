@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-Proper output normalization for price predictions
-Key changes:
-1. Removed sigmoid activation (was constraining outputs incorrectly)
-2. Added separate output normalization for target prices
-3. Saved output denormalization parameters for inference
-4. Filters outliers (> 6000 Rs) for cleaner ranges
+CRITICAL FIX: Use percentile-based output ranges instead of extreme min/max
+This prevents 567-6000 Rs range from compressing predictions
 """
 
 import pandas as pd
@@ -20,14 +16,11 @@ import pickle
 import json
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[1]  # repo root
+BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 DATA_PATH = DATA_DIR / "cinnamon_grades.csv"
 MODELS_DIR = BASE_DIR / "models"
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 CONFIG = {
     'grades_to_predict': [
         'Alba', 
@@ -43,41 +36,29 @@ CONFIG = {
     'learning_rate': 0.001,
     'validation_split': 0.15,
     'test_split': 0.15,
-    'outlier_threshold': 6000  # Filter prices above this
+    'outlier_threshold': 6000,  # Remove extreme outliers
+    'percentile_min': 1,  # 🆕 Use 1st percentile as min
+    'percentile_max': 99  # 🆕 Use 99th percentile as max
 }
 
-# ============================================================================
-# STEP 1: DATA LOADING & CLEANING
-# ============================================================================
 def load_and_clean_data(csv_path):
     """Load CSV and remove problematic rows"""
     print("📂 Loading data...")
     df = pd.read_csv(csv_path)
     
-    # Convert date format
     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
     
-    # Check for national columns
     has_national = 'national_highest_price_rs_kg' in df.columns
     if has_national:
         print("   ✓ National benchmark columns detected")
     
-    # Filter for target grades
     df = df[df['grade'].isin(CONFIG['grades_to_predict'])].copy()
-    
-    # Remove "National" and "Average Price" districts
     df = df[df['district'].str.lower() != 'national'].copy()
     df = df[df['district'] != 'Average Price'].copy()
     
-    # 🆕 FILTER OUTLIERS before training
+    # Filter outliers
     print(f"   Filtering outliers (> {CONFIG['outlier_threshold']} Rs)...")
     original_count = len(df)
-    
-    avg_outliers = len(df[df['average_price_rs_kg'] > CONFIG['outlier_threshold']])
-    high_outliers = len(df[df['highest_price_rs_kg'] > CONFIG['outlier_threshold']])
-    
-    if avg_outliers > 0 or high_outliers > 0:
-        print(f"   ⚠️  Found {avg_outliers} avg price outliers, {high_outliers} high price outliers")
     
     df = df[df['average_price_rs_kg'] <= CONFIG['outlier_threshold']].copy()
     df = df[df['highest_price_rs_kg'] <= CONFIG['outlier_threshold']].copy()
@@ -86,7 +67,6 @@ def load_and_clean_data(csv_path):
     if filtered_count > 0:
         print(f"   ✓ Filtered {filtered_count} outliers ({(filtered_count/original_count)*100:.2f}%)")
     
-    # Sort by date
     df = df.sort_values('date').reset_index(drop=True)
     
     print(f"   ✓ Total records: {len(df)}")
@@ -96,9 +76,6 @@ def load_and_clean_data(csv_path):
     
     return df, has_national
 
-# ============================================================================
-# STEP 2: FEATURE ENGINEERING
-# ============================================================================
 def engineer_features(df):
     """Create time-based and price features"""
     print("\n🔧 Engineering features...")
@@ -120,7 +97,6 @@ def engineer_features(df):
     df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
     df['day_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
     
-    # Sort for lag features
     df = df.sort_values(['district', 'grade', 'date']).reset_index(drop=True)
     
     # Lag features
@@ -150,12 +126,10 @@ def engineer_features(df):
     df['price_change_7d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(7)
     df['price_change_30d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(30)
     
-    # National comparison features
     if has_national:
         df['price_vs_national'] = (df['average_price_rs_kg'] - df['national_average_price_rs_kg']) / df['national_average_price_rs_kg']
         df['price_gap_absolute'] = df['average_price_rs_kg'] - df['national_average_price_rs_kg']
     
-    # Drop NaN
     df = df.dropna().reset_index(drop=True)
     
     print(f"   ✓ Created {len(df.columns)} features")
@@ -163,23 +137,18 @@ def engineer_features(df):
     
     return df
 
-# ============================================================================
-# STEP 3: PREPARE SEQUENCES
-# ============================================================================
 def create_sequences(df, lookback, forecast):
-    """Create sequences with separate output normalization"""
+    """Create sequences with PERCENTILE-based output normalization"""
     print(f"\n📊 Creating sequences (lookback={lookback}, forecast={forecast})...")
     
     has_national = 'national_highest_price_rs_kg' in df.columns
     
-    # Encode categoricals
     district_encoder = LabelEncoder()
     grade_encoder = LabelEncoder()
     
     df['district_encoded'] = district_encoder.fit_transform(df['district'])
     df['grade_encoded'] = grade_encoder.fit_transform(df['grade'])
     
-    # Select input features
     feature_cols = [
         'district_encoded', 'grade_encoded',
         'year', 'month', 'day', 'day_of_week', 'week_of_year', 'quarter',
@@ -203,27 +172,27 @@ def create_sequences(df, lookback, forecast):
     df_scaled = df.copy()
     df_scaled[feature_cols] = input_scaler.fit_transform(df[feature_cols])
     
-    # 🆕 DEFINE OUTPUT RANGES (already filtered, so use actual min/max)
-    output_avg_min = df['average_price_rs_kg'].min()
-    output_avg_max = df['average_price_rs_kg'].max()
-    output_high_min = df['highest_price_rs_kg'].min()
-    output_high_max = df['highest_price_rs_kg'].max()
+    # 🆕 USE PERCENTILE-BASED RANGES for output denormalization
+    output_avg_min = np.percentile(df['average_price_rs_kg'], CONFIG['percentile_min'])
+    output_avg_max = np.percentile(df['average_price_rs_kg'], CONFIG['percentile_max'])
+    output_high_min = np.percentile(df['highest_price_rs_kg'], CONFIG['percentile_min'])
+    output_high_max = np.percentile(df['highest_price_rs_kg'], CONFIG['percentile_max'])
     
-    print(f"\n   📊 Output price ranges (for denormalization):")
-    print(f"      Average: {output_avg_min:.2f} - {output_avg_max:.2f} Rs/kg")
-    print(f"      Highest: {output_high_min:.2f} - {output_high_max:.2f} Rs/kg")
+    print(f"\n   📊 Output price ranges (PERCENTILE-BASED):")
+    print(f"      Average: {output_avg_min:.2f} - {output_avg_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th percentile)")
+    print(f"      Highest: {output_high_min:.2f} - {output_high_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th percentile)")
+    print(f"      🎯 This range covers {CONFIG['percentile_max'] - CONFIG['percentile_min']}% of actual prices")
     
     def normalize_output(price, min_val, max_val):
-        """Normalize output to [0, 1]"""
-        return (price - min_val) / (max_val - min_val)
+        """Normalize output to [0, 1], clip to range"""
+        normalized = (price - min_val) / (max_val - min_val)
+        return np.clip(normalized, 0, 1)  # Clip to [0, 1]
     
     X, y = [], []
     
-    # Group by district and grade
     for (district, grade), group in df_scaled.groupby(['district', 'grade']):
         group = group.sort_values('date').reset_index(drop=True)
         
-        # Get original (unscaled) for output prices
         group_original = df[
             (df['district'] == district) & 
             (df['grade'] == grade)
@@ -233,14 +202,12 @@ def create_sequences(df, lookback, forecast):
             continue
         
         for i in range(len(group) - lookback - forecast + 1):
-            # Input: scaled features
             X_seq = group[feature_cols].iloc[i:i+lookback].values
             
-            # Output: ORIGINAL prices (then normalize)
             y_avg = group_original['average_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
             y_high = group_original['highest_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
             
-            # Normalize outputs to [0, 1]
+            # Normalize outputs to [0, 1] with clipping
             y_avg_norm = normalize_output(y_avg, output_avg_min, output_avg_max)
             y_high_norm = normalize_output(y_high, output_high_min, output_high_max)
             
@@ -258,21 +225,20 @@ def create_sequences(df, lookback, forecast):
     output_denorm = {
         'average_price': {
             'min': float(output_avg_min),
-            'max': float(output_avg_max)
+            'max': float(output_avg_max),
+            'method': f'percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
         },
         'highest_price': {
             'min': float(output_high_min),
-            'max': float(output_high_max)
+            'max': float(output_high_max),
+            'method': f'percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
         }
     }
     
     return X, y, input_scaler, district_encoder, grade_encoder, feature_cols, output_denorm
 
-# ============================================================================
-# STEP 4: BUILD MODEL
-# ============================================================================
 def build_model(input_shape, output_shape):
-    """Build LSTM model - NO sigmoid!"""
+    """Build LSTM model"""
     print("\n🏗️  Building LSTM model...")
     
     model = keras.Sequential([
@@ -281,7 +247,7 @@ def build_model(input_shape, output_shape):
         layers.LSTM(32, return_sequences=False),
         layers.Dropout(0.3),
         layers.Dense(32, activation='relu'),
-        layers.Dense(output_shape)  # 🆕 LINEAR output
+        layers.Dense(output_shape)  # LINEAR output
     ])
     
     model.compile(
@@ -291,12 +257,8 @@ def build_model(input_shape, output_shape):
     )
     
     print(model.summary())
-    print("\n   ✅ Using LINEAR output activation (no sigmoid)")
     return model
 
-# ============================================================================
-# STEP 5: TRAIN MODEL
-# ============================================================================
 def train_model(model, X_train, y_train, X_val, y_val):
     """Train with early stopping"""
     print("\n🚀 Training model...")
@@ -326,11 +288,8 @@ def train_model(model, X_train, y_train, X_val, y_val):
     
     return history
 
-# ============================================================================
-# STEP 6: CONVERT TO TFLITE
-# ============================================================================
 def convert_to_tflite(model, output_path):
-    """Convert to TFLite with LSTM support"""
+    """Convert to TFLite"""
     print("\n📱 Converting to TFLite...")
     
     try:
@@ -342,9 +301,6 @@ def convert_to_tflite(model, output_path):
         ]
         
         converter._experimental_lower_tensor_list_ops = False
-        
-        print("   ⚙️  Converter settings:")
-        print("      - TFLITE_BUILTINS + SELECT_TF_OPS (for LSTM)")
         
         tflite_model = converter.convert()
         
@@ -362,14 +318,10 @@ def convert_to_tflite(model, output_path):
         print(f"\n❌ TFLite conversion failed: {e}")
         return None
 
-# ============================================================================
-# STEP 7: SAVE ARTIFACTS
-# ============================================================================
 def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_denorm, config, test_loss, test_mae, has_national):
     """Save all preprocessing artifacts"""
     print("\n💾 Saving metadata...")
     
-    # Save pickle files
     with open(MODELS_DIR / 'scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
     
@@ -379,7 +331,6 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_
     with open(MODELS_DIR / 'grade_encoder.pkl', 'wb') as f:
         pickle.dump(grade_encoder, f)
     
-    # Create comprehensive preprocessing.json
     preprocessing_data = {
         'scaler': {
             'min_values': scaler.data_min_.tolist(),
@@ -399,17 +350,15 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_
         'num_features': len(feature_cols),
         'lookback_days': config['lookback_days'],
         'forecast_days': config['forecast_days'],
-        'output_denormalization': output_denorm,  # 🆕 CRITICAL FIX
+        'output_denormalization': output_denorm,
         'has_national_features': has_national,
         'national_features': [col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col or 'gap_' in col] if has_national else [],
         'national_feature_count': len([col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col or 'gap_' in col])
     }
     
-    # Save preprocessing.json
     with open(MODELS_DIR / 'preprocessing.json', 'w') as f:
         json.dump(preprocessing_data, f, indent=2)
     
-    # Save metadata.json (backward compatibility)
     metadata = {
         'config': config,
         'feature_cols': feature_cols,
@@ -425,33 +374,24 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_
     with open(MODELS_DIR / 'metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print("   ✓ Saved preprocessing.json (includes output_denormalization)")
+    print("   ✓ Saved preprocessing.json (with PERCENTILE-BASED output ranges)")
     print("   ✓ Saved metadata.json")
-    print("   ✓ Saved encoder pickles")
 
-# ============================================================================
-# MAIN PIPELINE
-# ============================================================================
 def main():
     print("=" * 70)
-    print("🌿 CINNAMON PRICE PREDICTION - FIXED TRAINING")
+    print("🌿 CINNAMON PRICE PREDICTION - PERCENTILE-BASED TRAINING")
     print("=" * 70)
-    print("Key fixes:")
-    print("  - Removed sigmoid activation (was causing low predictions)")
-    print("  - Added proper output normalization [0,1]")
-    print("  - Saved correct output_denormalization parameters")
-    print("  - Filtered outliers > 6000 Rs")
+    print("Key improvements:")
+    print("  - Uses 1st-99th percentile for output ranges (not extreme min/max)")
+    print("  - Prevents 567-6000 Rs range from compressing predictions")
+    print("  - More realistic price predictions for all grades")
     print("=" * 70)
     
     MODELS_DIR.mkdir(exist_ok=True)
     
-    # Load data
     df, has_national = load_and_clean_data(DATA_PATH)
-    
-    # Feature engineering
     df = engineer_features(df)
     
-    # Create sequences
     X, y, scaler, district_enc, grade_enc, feature_cols, output_denorm = create_sequences(
         df, CONFIG['lookback_days'], CONFIG['forecast_days']
     )
@@ -470,36 +410,28 @@ def main():
     print(f"   Val:   {len(X_val)}")
     print(f"   Test:  {len(X_test)}")
     
-    # Build model
     model = build_model(
         input_shape=(CONFIG['lookback_days'], len(feature_cols)),
         output_shape=CONFIG['forecast_days'] * 2
     )
     
-    # Train
     history = train_model(model, X_train, y_train, X_val, y_val)
     
-    # Evaluate
     print("\n📈 Evaluating on test set...")
     test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
     
-    # Calculate real MAE
     avg_range = output_denorm['average_price']['max'] - output_denorm['average_price']['min']
     real_mae = test_mae * avg_range
     
     print(f"   Test Loss (MSE): {test_loss:.4f}")
     print(f"   Test MAE (scaled): {test_mae:.4f}")
     print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")
-    print(f"   Price range: {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
+    print(f"   Price range (percentile-based): {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
     
-    # Save model
     model.save(MODELS_DIR / 'cinnamon_grades_model.h5')
     print("\n✅ Saved Keras model")
     
-    # Convert to TFLite
     convert_to_tflite(model, MODELS_DIR / 'cinnamon_grades_model.tflite')
-    
-    # Save metadata
     save_metadata(scaler, district_enc, grade_enc, feature_cols, output_denorm, CONFIG, test_loss, test_mae, has_national)
     
     print("\n" + "=" * 70)
@@ -508,15 +440,13 @@ def main():
     print("\n📦 Output files:")
     print("   - cinnamon_grades_model.h5")
     print("   - cinnamon_grades_model.tflite")
-    print("   - preprocessing.json (✨ with output_denormalization)")
+    print("   - preprocessing.json (✨ with PERCENTILE output ranges)")
     print("   - scaler.pkl, district_encoder.pkl, grade_encoder.pkl")
-    print("   - metadata.json")
     
-    if has_national:
-        nat_count = len([c for c in feature_cols if 'national' in c or 'nat_' in c])
-        print(f"\n✨ Trained with {nat_count} national benchmark features")
-    
-    print("\n🚀 Deploy the new model and preprocessing.json to fix predictions!")
+    print(f"\n🎯 Percentile ranges used:")
+    print(f"   Average: {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
+    print(f"   Highest: {output_denorm['highest_price']['min']:.2f} - {output_denorm['highest_price']['max']:.2f} Rs/kg")
+    print(f"   Method: {output_denorm['average_price']['method']}")
 
 if __name__ == "__main__":
     main()
