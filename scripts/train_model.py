@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-CINNAMON GRADES PRICE PREDICTION MODEL - WITH NATIONAL FEATURES
+CINNAMON GRADES PRICE PREDICTION MODEL
 Predicts: Alba, C-5 Sp, C-5, C-4 (7 days ahead, per district)
-Now includes national price context as features
+UPDATED: Handles National as a regular district row
 """
 
 import pandas as pd
@@ -26,15 +26,20 @@ MODELS_DIR = BASE_DIR / "models"
 # CONFIGURATION
 # ============================================================================
 CONFIG = {
-    'grades_to_predict': ['Alba', 'C-5 Sp', 'C-5', 'C-4'],
+    'grades_to_predict': [
+        'Alba', 
+        'C-4', 'C-5', 'C-5 Sp',
+        'M-4', 'M-5',
+        'H-1', 'H-2',
+        'H-Faq', 'Heen', 'Gorosu'
+    ], 
     'lookback_days': 30,      # Use past 30 days
     'forecast_days': 7,        # Predict 7 days ahead
     'batch_size': 32,
     'epochs': 50,
     'learning_rate': 0.001,
     'validation_split': 0.15,
-    'test_split': 0.15,
-    'use_national_features': True  # NEW: Use national price columns as features
+    'test_split': 0.15
 }
 
 # ============================================================================
@@ -48,27 +53,19 @@ def load_and_clean_data(csv_path):
     # Convert date format DD.MM.YYYY to datetime
     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
     
-    # Remove "Average Price" aggregate rows (district-level aggregates we don't need)
+    # CRITICAL: Remove "Average Price" aggregate rows (if they exist)
     original_len = len(df)
     df = df[df['district'] != 'Average Price'].copy()
     removed = original_len - len(df)
-    print(f"   ✓ Removed {removed} 'Average Price' aggregate rows")
+    if removed > 0:
+        print(f"   ✓ Removed {removed} 'Average Price' aggregate rows")
+    
+    # KEEP "National" as a valid district (it's now stored as a regular row)
+    # National data will be included in training for comparison
     
     # Filter for target grades only
     df = df[df['grade'].isin(CONFIG['grades_to_predict'])].copy()
     print(f"   ✓ Filtered to grades: {CONFIG['grades_to_predict']}")
-    
-    # Check for national price columns
-    if CONFIG['use_national_features']:
-        has_national = 'national_average_price_rs_kg' in df.columns and 'national_highest_price_rs_kg' in df.columns
-        if has_national:
-            print(f"   ✓ National price columns detected and will be used as features")
-            # Show sample of national prices
-            national_sample = df[['date', 'grade', 'national_average_price_rs_kg', 'national_highest_price_rs_kg']].drop_duplicates()
-            print(f"   ✓ National price data available for {len(national_sample)} date-grade combinations")
-        else:
-            print(f"   ⚠️  National price columns not found - training without national features")
-            CONFIG['use_national_features'] = False
     
     # Sort by date
     df = df.sort_values('date').reset_index(drop=True)
@@ -78,10 +75,15 @@ def load_and_clean_data(csv_path):
     print(f"   ✓ Districts: {df['district'].nunique()}")
     print(f"   ✓ Unique districts: {sorted(df['district'].unique())}")
     
+    # Check if National is present
+    national_count = len(df[df['district'] == 'National'])
+    if national_count > 0:
+        print(f"   ✓ National benchmark records: {national_count}")
+    
     return df
 
 # ============================================================================
-# STEP 2: FEATURE ENGINEERING - ENHANCED WITH NATIONAL FEATURES
+# STEP 2: FEATURE ENGINEERING
 # ============================================================================
 def engineer_features(df):
     """Create time-based and price features"""
@@ -106,12 +108,12 @@ def engineer_features(df):
     # Sort for lag features
     df = df.sort_values(['district', 'grade', 'date']).reset_index(drop=True)
     
-    # DISTRICT-LEVEL lag features (previous prices)
+    # Lag features (previous prices)
     for lag in [1, 7, 14, 30]:
         df[f'avg_price_lag_{lag}'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].shift(lag)
         df[f'high_price_lag_{lag}'] = df.groupby(['district', 'grade'])['highest_price_rs_kg'].shift(lag)
     
-    # DISTRICT-LEVEL rolling statistics
+    # Rolling statistics
     for window in [7, 14, 30]:
         df[f'avg_price_roll_mean_{window}'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].transform(
             lambda x: x.rolling(window=window, min_periods=1).mean()
@@ -120,38 +122,14 @@ def engineer_features(df):
             lambda x: x.rolling(window=window, min_periods=1).std()
         )
     
-    # DISTRICT-LEVEL price momentum
+    # Price momentum
     df['price_change_7d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(7)
     df['price_change_30d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(30)
-    
-    # NEW: NATIONAL-LEVEL features (if available)
-    if CONFIG['use_national_features']:
-        print("   🌍 Creating national-level features...")
-        
-        # National lag features
-        for lag in [1, 7, 14]:
-            df[f'national_avg_lag_{lag}'] = df.groupby('grade')['national_average_price_rs_kg'].shift(lag)
-            df[f'national_high_lag_{lag}'] = df.groupby('grade')['national_highest_price_rs_kg'].shift(lag)
-        
-        # National rolling statistics
-        for window in [7, 14]:
-            df[f'national_avg_roll_mean_{window}'] = df.groupby('grade')['national_average_price_rs_kg'].transform(
-                lambda x: x.rolling(window=window, min_periods=1).mean()
-            )
-        
-        # Price gap: district vs national (how much above/below national average?)
-        df['price_gap_vs_national'] = df['average_price_rs_kg'] - df['national_average_price_rs_kg']
-        df['price_gap_pct'] = (df['average_price_rs_kg'] / df['national_average_price_rs_kg'] - 1) * 100
-        
-        # National momentum
-        df['national_price_change_7d'] = df.groupby('grade')['national_average_price_rs_kg'].pct_change(7)
-        
-        print(f"   ✓ Added national price features")
     
     # Drop rows with NaN from lag features
     df = df.dropna().reset_index(drop=True)
     
-    print(f"   ✓ Created {len(df.columns)} total features")
+    print(f"   ✓ Created {len(df.columns)} features")
     print(f"   ✓ Remaining records: {len(df)}")
     
     return df
@@ -170,34 +148,18 @@ def create_sequences(df, lookback, forecast):
     df['district_encoded'] = district_encoder.fit_transform(df['district'])
     df['grade_encoded'] = grade_encoder.fit_transform(df['grade'])
     
-    # Select features - START WITH CORE FEATURES
+    # Select features
     feature_cols = [
         'district_encoded', 'grade_encoded',
         'year', 'month', 'day', 'day_of_week', 'week_of_year', 'quarter',
         'month_sin', 'month_cos', 'day_sin', 'day_cos',
         'average_price_rs_kg', 'highest_price_rs_kg',
+        
     ]
     
-    # Add district-level lag/rolling features
+    # Add lag features
     lag_cols = [col for col in df.columns if 'lag_' in col or 'roll_' in col or 'change_' in col]
     feature_cols.extend(lag_cols)
-    
-    # Add national features if available
-    if CONFIG['use_national_features']:
-        national_cols = [
-            'national_average_price_rs_kg',
-            'national_highest_price_rs_kg',
-            'price_gap_vs_national',
-            'price_gap_pct'
-        ]
-        # Add national lag/rolling features that were created
-        national_feature_cols = [col for col in df.columns if 'national_' in col and col not in national_cols]
-        national_cols.extend(national_feature_cols)
-        
-        feature_cols.extend(national_cols)
-        print(f"   ✓ Including {len(national_cols)} national-level features")
-    
-    print(f"   ✓ Total features for model: {len(feature_cols)}")
     
     # Normalize features
     scaler = MinMaxScaler()
@@ -206,7 +168,7 @@ def create_sequences(df, lookback, forecast):
     
     X, y = [], []
     
-    # Group by district and grade
+    # Group by district and grade (includes National as a district)
     for (district, grade), group in df_scaled.groupby(['district', 'grade']):
         group = group.sort_values('date').reset_index(drop=True)
         
@@ -230,6 +192,7 @@ def create_sequences(df, lookback, forecast):
     print(f"   ✓ Created {len(X)} sequences")
     print(f"   ✓ X shape: {X.shape}")  # (samples, lookback, features)
     print(f"   ✓ y shape: {y.shape}")  # (samples, forecast*2)
+    print(f"   ✓ Districts in model: {sorted(district_encoder.classes_)}")
     
     return X, y, scaler, district_encoder, grade_encoder, feature_cols
 
@@ -295,7 +258,15 @@ def train_model(model, X_train, y_train, X_val, y_val):
 # STEP 6: CONVERT TO TFLITE
 # ============================================================================
 def convert_to_tflite(model, output_path):
-    """Convert Keras model to TFLite format with LSTM support"""
+    """
+    Convert Keras model to TFLite format with LSTM support.
+    
+    This version includes:
+    - Proper LSTM support via SELECT_TF_OPS
+    - Disabled tensor list lowering (fixes the TensorListReserve error)
+    - Better error handling
+    - No conflicting optimization flags
+    """
     print("\n📱 Converting to TFLite...")
     
     try:
@@ -309,7 +280,11 @@ def convert_to_tflite(model, output_path):
         ]
         
         # CRITICAL FIX: Disable tensor list ops lowering
+        # This prevents the TensorListReserve error
         converter._experimental_lower_tensor_list_ops = False
+        
+        # Note: We're NOT using converter.optimizations or allow_custom_ops
+        # because they can conflict with SELECT_TF_OPS for LSTM models
         
         print("   ⚙️  Converter settings:")
         print("      - TFLITE_BUILTINS: enabled")
@@ -329,6 +304,7 @@ def convert_to_tflite(model, output_path):
         print(f"\n✅ Saved TFLite model: {output_path}")
         print(f"   Size: {size_kb:.2f} KB ({size_mb:.2f} MB)")
         
+        # Important note about model size
         if size_mb > 5:
             print(f"\n   ℹ️  Note: Model is larger because it includes TF ops for LSTM")
             print(f"      This is normal and required for LSTM layers to work.")
@@ -338,6 +314,9 @@ def convert_to_tflite(model, output_path):
     except Exception as e:
         print(f"\n❌ TFLite conversion failed: {str(e)}")
         print("\n💡 The Keras model (.h5) was saved and can be used with TensorFlow")
+        print("   You can deploy the .h5 model if TFLite isn't strictly required")
+        
+        # Don't raise the exception - allow the script to continue
         return None
 
 # ============================================================================
@@ -348,13 +327,13 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config,
     print("\n💾 Saving metadata...")
     
     # Save encoders and scaler
-    with open(MODELS_DIR / 'scaler.pkl', 'wb') as f:
+    with open('models/scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
     
-    with open(MODELS_DIR / 'district_encoder.pkl', 'wb') as f:
+    with open('models/district_encoder.pkl', 'wb') as f:
         pickle.dump(district_encoder, f)
     
-    with open(MODELS_DIR / 'grade_encoder.pkl', 'wb') as f:
+    with open('models/grade_encoder.pkl', 'wb') as f:
         pickle.dump(grade_encoder, f)
     
     # Save config and feature list
@@ -367,10 +346,10 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config,
         'trained_on': datetime.now().isoformat(),
         'test_loss': float(test_loss),
         'test_mae': float(test_mae),
-        'uses_national_features': config['use_national_features']
+        'uses_national_features': 'National' in district_encoder.classes_  # NEW: Flag for national data
     }
     
-    with open(MODELS_DIR / 'metadata.json', 'w') as f:
+    with open('models/metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
     
     print("   ✓ Saved preprocessing artifacts")
@@ -381,12 +360,13 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config,
 def main():
     print("=" * 70)
     print("🌿 CINNAMON GRADES PRICE PREDICTION - TRAINING PIPELINE")
-    print("   With National Price Context Features")
     print("=" * 70)
     
     # Create output directory
     import os
     os.makedirs('models', exist_ok=True)
+    
+    csv_path = DATA_DIR / "cinnamon_grades.csv"
     
     MODELS_DIR.mkdir(exist_ok=True)
 
@@ -432,23 +412,28 @@ def main():
     test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
 
     # UNSCALE MAE to get real price error
+    # Find the index of 'average_price_rs_kg' in feature_cols
     price_feature_idx = feature_cols.index('average_price_rs_kg')
+
+    # Get the min and max values for the price feature from the scaler
     price_min = scaler.data_min_[price_feature_idx]
     price_max = scaler.data_max_[price_feature_idx]
     price_range = price_max - price_min
+
+    # Convert scaled MAE to actual Rs/kg
     real_mae = test_mae * price_range
 
     print(f"   Test Loss (MSE): {test_loss:.4f}")
     print(f"   Test MAE (scaled): {test_mae:.4f}")
-    print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")
+    print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")  # ← The real error!
     print(f"   Price range in data: {price_min:.2f} - {price_max:.2f} Rs/kg")
-
+    
     # Save Keras model
-    model.save(MODELS_DIR / 'cinnamon_grades_model.h5')
-    print(f"\n✅ Saved Keras model: {MODELS_DIR / 'cinnamon_grades_model.h5'}")
+    model.save('models/cinnamon_grades_model.h5')
+    print("\n✅ Saved Keras model: models/cinnamon_grades_model.h5")
     
     # Convert to TFLite
-    convert_to_tflite(model, MODELS_DIR / 'cinnamon_grades_model.tflite')
+    convert_to_tflite(model, 'models/cinnamon_grades_model.tflite')
     
     # Save metadata
     save_metadata(scaler, district_enc, grade_enc, feature_cols, CONFIG, test_loss, test_mae)
@@ -457,16 +442,12 @@ def main():
     print("✅ TRAINING COMPLETE!")
     print("=" * 70)
     print("\n📦 Output files:")
-    print(f"   - {MODELS_DIR / 'cinnamon_grades_model.h5'} (Keras)")
-    print(f"   - {MODELS_DIR / 'cinnamon_grades_model.tflite'} (Mobile)")
-    print(f"   - {MODELS_DIR / 'scaler.pkl'}")
-    print(f"   - {MODELS_DIR / 'district_encoder.pkl'}")
-    print(f"   - {MODELS_DIR / 'grade_encoder.pkl'}")
-    print(f"   - {MODELS_DIR / 'metadata.json'}")
-    
-    if CONFIG['use_national_features']:
-        print("\n🌍 National price features were included in training")
-        print("   This provides broader market context for predictions")
+    print("   - models/cinnamon_grades_model.h5 (Keras)")
+    print("   - models/cinnamon_grades_model.tflite (Mobile)")
+    print("   - models/scaler.pkl")
+    print("   - models/district_encoder.pkl")
+    print("   - models/grade_encoder.pkl")
+    print("   - models/metadata.json")
 
 if __name__ == "__main__":
     main()

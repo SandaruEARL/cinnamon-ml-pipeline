@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Export preprocessing artifacts to JSON for Flutter/Dart consumption
-Enhanced to handle national price features
+UPDATED: Handles National as a regular district
 """
 
 import pickle
@@ -51,7 +51,7 @@ def export_to_json():
         'num_features': len(metadata['feature_cols']),
         'lookback_days': metadata['config']['lookback_days'],
         'forecast_days': metadata['config']['forecast_days'],
-        'uses_national_features': metadata.get('uses_national_features', False)  # NEW
+        'uses_national_features': metadata.get('uses_national_features', False)  # NEW: Flag
     }
     
     # Save to JSON
@@ -62,10 +62,13 @@ def export_to_json():
     print(f"✅ Exported {output_path}")
     print(f"   Scaler: {len(scaler.data_min_)} features")
     print(f"   Districts: {len(district_encoder.classes_)}")
+    
+    # Check for National district
+    if 'National' in district_encoder.classes_:
+        print(f"   ✨ National district: INCLUDED")
+    
     print(f"   Grades: {len(grade_encoder.classes_)}")
     print(f"   Feature columns: {len(metadata['feature_cols'])}")
-    if preprocessing['uses_national_features']:
-        print(f"   🌍 Model uses national price features")
     
     return preprocessing
 
@@ -82,112 +85,49 @@ def export_recent_data():
     # Convert date
     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
     
-    # Remove "Average Price" rows
+    # Remove "Average Price" rows (if they exist)
+    original_len = len(df)
     df = df[df['district'] != 'Average Price'].copy()
+    removed = original_len - len(df)
+    if removed > 0:
+        print(f"   Removed {removed} 'Average Price' aggregate rows")
     
-    # Check if national columns exist
-    has_national = 'national_average_price_rs_kg' in df.columns
+    # KEEP National district (it's now a regular row)
     
     # Sort by date
     df = df.sort_values('date')
     
-    # Get last 30 records per district+grade combination
+    # Get last 30 records per district+grade combination (includes National)
     recent = df.groupby(['district', 'grade']).tail(30).reset_index(drop=True)
     
-    # Save to CSV (includes national columns if they exist)
+    # Save to CSV
     output_path = MODELS_DIR / 'recent_data.csv'
     recent.to_csv(output_path, index=False)
     
     print(f"✅ Exported {output_path}")
     print(f"   Total records: {len(recent)}")
     print(f"   Districts: {recent['district'].nunique()}")
+    
+    # Check for National records
+    national_count = len(recent[recent['district'] == 'National'])
+    if national_count > 0:
+        print(f"   ✨ National benchmark records: {national_count}")
+    
     print(f"   Grades: {recent['grade'].nunique()}")
     print(f"   Date range: {recent['date'].min()} to {recent['date'].max()}")
     
-    if has_national:
-        print(f"   🌍 National price columns included")
-        # Show sample of national prices
-        print(f"\n   Sample national prices (latest date):")
-        latest_date = recent['date'].max()
-        sample = recent[recent['date'] == latest_date][['grade', 'national_average_price_rs_kg', 'national_highest_price_rs_kg']].drop_duplicates()
-        for _, row in sample.iterrows():
-            print(f"      {row['grade']}: Avg={row['national_average_price_rs_kg']:.2f}, High={row['national_highest_price_rs_kg']:.2f}")
-    
     return recent
-
-def export_national_summary():
-    """
-    NEW: Export national price summary for easy reference
-    This helps Flutter app show national trends without loading full dataset
-    """
-    print("\n🌍 Exporting national price summary...")
-    
-    import pandas as pd
-    
-    data_path = BASE_DIR / "data" / "cinnamon_grades.csv"
-    df = pd.read_csv(data_path)
-    
-    # Check if national columns exist
-    if 'national_average_price_rs_kg' not in df.columns:
-        print("   ⚠️  No national price columns found - skipping")
-        return None
-    
-    # Convert date
-    df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
-    
-    # Get unique date-grade combinations with national prices
-    national_summary = df[['date', 'grade', 'national_average_price_rs_kg', 'national_highest_price_rs_kg']].drop_duplicates()
-    
-    # Sort by date
-    national_summary = national_summary.sort_values('date')
-    
-    # Get last 90 days of national data
-    cutoff_date = national_summary['date'].max() - pd.Timedelta(days=90)
-    national_summary = national_summary[national_summary['date'] >= cutoff_date]
-    
-    # Convert date back to string for JSON compatibility
-    national_summary['date'] = national_summary['date'].dt.strftime('%d.%m.%Y')
-    
-    # Save as JSON for easy Flutter parsing
-    output_path = MODELS_DIR / 'national_prices.json'
-    
-    # Convert to nested structure: {grade: [{date, avg, high}, ...]}
-    national_dict = {}
-    for grade in national_summary['grade'].unique():
-        grade_data = national_summary[national_summary['grade'] == grade]
-        national_dict[grade] = [
-            {
-                'date': row['date'],
-                'average_price_rs_kg': float(row['national_average_price_rs_kg']),
-                'highest_price_rs_kg': float(row['national_highest_price_rs_kg'])
-            }
-            for _, row in grade_data.iterrows()
-        ]
-    
-    with open(output_path, 'w') as f:
-        json.dump(national_dict, f, indent=2)
-    
-    print(f"✅ Exported {output_path}")
-    print(f"   Grades: {len(national_dict)}")
-    print(f"   Date range: {national_summary['date'].min()} to {national_summary['date'].max()}")
-    print(f"   Total records: {len(national_summary)}")
-    
-    return national_dict
 
 def main():
     print("=" * 70)
     print("📦 EXPORTING PREPROCESSING ARTIFACTS FOR FLUTTER")
-    print("   Enhanced with National Price Features")
     print("=" * 70)
     
     # Export preprocessing parameters
     preprocessing = export_to_json()
     
-    # Export recent data (includes national columns if available)
+    # Export recent data
     recent_data = export_recent_data()
-    
-    # Export national price summary (NEW)
-    national_summary = export_national_summary()
     
     print("\n" + "=" * 70)
     print("✅ EXPORT COMPLETE!")
@@ -195,13 +135,8 @@ def main():
     print("\n📦 Files created:")
     print("   - models/preprocessing.json")
     print("   - models/recent_data.csv")
-    if national_summary:
-        print("   - models/national_prices.json  🌍 NEW")
     print("\n🚀 These files should be deployed to your public repository")
-    
-    if preprocessing.get('uses_national_features'):
-        print("\n💡 Note: Model uses national price features")
-        print("   Your Flutter app should include national prices when making predictions")
+    print("\n💡 Note: National prices are included as district='National'")
 
 if __name__ == "__main__":
     main()

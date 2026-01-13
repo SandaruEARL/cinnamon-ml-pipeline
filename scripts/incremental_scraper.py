@@ -3,6 +3,7 @@
 INCREMENTAL CINNAMON SCRAPER
 Scrapes ONLY last 4 weeks of data (for weekly automation)
 Uses same pattern as full scraper
+UPDATED: Includes National as a regular district row
 """
 
 import requests
@@ -136,7 +137,7 @@ def clean_price(price_str):
         return None
 
 def extract_cinnamon_grades(soup, date_str):
-    """Extract cinnamon grade prices from CINNAMON table"""
+    """Extract cinnamon grade prices - INCLUDING National as a district row"""
     data = []
     
     # Find CINNAMON anchor
@@ -192,6 +193,7 @@ def extract_cinnamon_grades(soup, date_str):
     
     rows = tbody.find_all('tr')
     
+    # Extract ALL rows INCLUDING National (treat National as a district)
     for row in rows:
         cells = row.find_all('td')
         if len(cells) < 2:
@@ -199,7 +201,8 @@ def extract_cinnamon_grades(soup, date_str):
         
         district = cells[0].get_text(strip=True)
         
-        if not district or district.lower() in ['district', 'national', 'total']:
+        # Skip only header rows, keep National and all districts
+        if not district or district.lower() in ['district', 'total']:
             continue
         
         col_idx = 1
@@ -211,7 +214,7 @@ def extract_cinnamon_grades(soup, date_str):
                 if highest is not None or average is not None:
                     data.append({
                         'date': date_str,
-                        'district': district,
+                        'district': district,  # Will be "National" for national row
                         'grade': grade,
                         'highest_price_rs_kg': highest,
                         'average_price_rs_kg': average
@@ -284,6 +287,11 @@ def scrape_last_4_weeks(existing_csv_path=None):
     # Create DataFrame for new data
     new_df = pd.DataFrame(all_grades)
     
+    # Check for National records
+    national_count = len(new_df[new_df['district'] == 'National'])
+    if national_count > 0:
+        print(f"✨ National benchmark records: {national_count}")
+    
     # Step 3: Merge with existing data if provided
     if existing_csv_path and os.path.exists(existing_csv_path):
         print(f"\n🔗 Merging with existing data: {existing_csv_path}")
@@ -324,6 +332,7 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("🔄 INCREMENTAL CINNAMON SCRAPER")
     print("   Scrapes ONLY last 4 weeks for weekly updates")
+    print("   Includes National benchmark prices")
     print("="*80)
     
     # Look for existing data in parent directory (repository structure)
@@ -358,6 +367,11 @@ if __name__ == "__main__":
         print(f"📅 Date range: {df['date'].min()} → {df['date'].max()}")
         print(f"🏷️  Grades: {', '.join(sorted(df['grade'].unique()))}")
         print(f"📍 Districts: {df['district'].nunique()}")
+        
+        # Check for National
+        national_in_output = len(df[df['district'] == 'National'])
+        if national_in_output > 0:
+            print(f"✨ National records in output: {national_in_output}")
         
         print(f"\n📊 Latest 3 records:")
         print(df.tail(3).to_string(index=False))
