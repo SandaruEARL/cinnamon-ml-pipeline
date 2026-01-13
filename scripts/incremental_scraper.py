@@ -74,7 +74,7 @@ def fetch_recent_urls_from_index(cutoff_date):
     
     url_map = {}
     
-    current_year = datetime.now().year
+    current_year = datetime.now().year  # ← DEFINE ONCE HERE
     years_to_check = [current_year, current_year - 1]
     
     for year in years_to_check:
@@ -96,9 +96,13 @@ def fetch_recent_urls_from_index(cutoff_date):
             if not current:
                 break
             
+            # Add dynamic year boundary detection
             if current.name == 'center':
-                h1 = current.find('h1')
-                if h1 and (str(year + 1) in h1.get_text() or str(year - 1) in h1.get_text()):
+               h1 = current.find('h1')
+               if h1:
+                 # REMOVE: current_year = datetime.now().year  
+                 next_year_str = str(year + 1) if year <= current_year else str(year - 1)
+                 if next_year_str in h1.get_text():
                     break
             
             if current.name == 'a':

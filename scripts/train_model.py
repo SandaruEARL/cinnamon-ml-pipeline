@@ -229,13 +229,12 @@ def build_model(input_shape, output_shape):
     print("\n🏗️  Building LSTM model...")
     
     model = keras.Sequential([
-        layers.LSTM(128, return_sequences=True, input_shape=input_shape),
-        layers.Dropout(0.2),
-        layers.LSTM(64, return_sequences=False),
-        layers.Dropout(0.2),
-        layers.Dense(64, activation='relu'),
-        layers.Dense(32, activation='relu'),
-        layers.Dense(output_shape)
+    layers.LSTM(64, return_sequences=True, input_shape=input_shape),  # 128→64
+    layers.Dropout(0.3),  # 0.2→0.3
+    layers.LSTM(32, return_sequences=False),  # 64→32
+    layers.Dropout(0.3),  # 0.2→0.3
+    layers.Dense(32, activation='relu'),  # 64→32
+    layers.Dense(output_shape, activation='sigmoid')  # SIGMOID activated
     ])
     
     model.compile(
