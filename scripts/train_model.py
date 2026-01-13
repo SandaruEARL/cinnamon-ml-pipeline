@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-CINNAMON GRADES PRICE PREDICTION MODEL (WITH NATIONAL VALUES)
-Predicts: Alba, C-5 Sp, C-5, C-4 (7 days ahead, per district)
-Now includes national benchmark prices as features
+Proper output normalization for price predictions
+Key changes:
+1. Removed sigmoid activation (was constraining outputs incorrectly)
+2. Added separate output normalization for target prices
+3. Saved output denormalization parameters for inference
+4. Filters outliers (> 6000 Rs) for cleaner ranges
 """
 
 import pandas as pd
@@ -33,13 +36,14 @@ CONFIG = {
         'H-1', 'H-2',
         'H-Faq', 'Heen', 'Gorosu'
     ], 
-    'lookback_days': 30,      # Use past 30 days
-    'forecast_days': 7,        # Predict 7 days ahead
+    'lookback_days': 30,
+    'forecast_days': 7,
     'batch_size': 32,
     'epochs': 50,
     'learning_rate': 0.001,
     'validation_split': 0.15,
-    'test_split': 0.15
+    'test_split': 0.15,
+    'outlier_threshold': 6000  # Filter prices above this
 }
 
 # ============================================================================
@@ -50,19 +54,37 @@ def load_and_clean_data(csv_path):
     print("📂 Loading data...")
     df = pd.read_csv(csv_path)
     
-    # Convert date format DD.MM.YYYY to datetime
+    # Convert date format
     df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
     
-    # Check if national columns exist
+    # Check for national columns
     has_national = 'national_highest_price_rs_kg' in df.columns
     if has_national:
         print("   ✓ National benchmark columns detected")
-    else:
-        print("   ⚠️  No national columns found - will proceed without them")
     
-    # Filter for target grades only
+    # Filter for target grades
     df = df[df['grade'].isin(CONFIG['grades_to_predict'])].copy()
-    print(f"   ✓ Filtered to grades: {CONFIG['grades_to_predict']}")
+    
+    # Remove "National" and "Average Price" districts
+    df = df[df['district'].str.lower() != 'national'].copy()
+    df = df[df['district'] != 'Average Price'].copy()
+    
+    # 🆕 FILTER OUTLIERS before training
+    print(f"   Filtering outliers (> {CONFIG['outlier_threshold']} Rs)...")
+    original_count = len(df)
+    
+    avg_outliers = len(df[df['average_price_rs_kg'] > CONFIG['outlier_threshold']])
+    high_outliers = len(df[df['highest_price_rs_kg'] > CONFIG['outlier_threshold']])
+    
+    if avg_outliers > 0 or high_outliers > 0:
+        print(f"   ⚠️  Found {avg_outliers} avg price outliers, {high_outliers} high price outliers")
+    
+    df = df[df['average_price_rs_kg'] <= CONFIG['outlier_threshold']].copy()
+    df = df[df['highest_price_rs_kg'] <= CONFIG['outlier_threshold']].copy()
+    
+    filtered_count = original_count - len(df)
+    if filtered_count > 0:
+        print(f"   ✓ Filtered {filtered_count} outliers ({(filtered_count/original_count)*100:.2f}%)")
     
     # Sort by date
     df = df.sort_values('date').reset_index(drop=True)
@@ -70,9 +92,9 @@ def load_and_clean_data(csv_path):
     print(f"   ✓ Total records: {len(df)}")
     print(f"   ✓ Date range: {df['date'].min()} to {df['date'].max()}")
     print(f"   ✓ Districts: {df['district'].nunique()}")
-    print(f"   ✓ Unique districts: {sorted(df['district'].unique())}")
+    print(f"   ✓ Price range: {df['average_price_rs_kg'].min():.0f} - {df['average_price_rs_kg'].max():.0f} Rs/kg")
     
-    return df
+    return df, has_national
 
 # ============================================================================
 # STEP 2: FEATURE ENGINEERING
@@ -82,8 +104,6 @@ def engineer_features(df):
     print("\n🔧 Engineering features...")
     
     df = df.copy()
-    
-    # Check for national columns
     has_national = 'national_highest_price_rs_kg' in df.columns
     
     # Time features
@@ -94,7 +114,7 @@ def engineer_features(df):
     df['week_of_year'] = df['date'].dt.isocalendar().week.astype(int)
     df['quarter'] = df['date'].dt.quarter
     
-    # Cyclical encoding for seasonality
+    # Cyclical encoding
     df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
     df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
     df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
@@ -103,12 +123,11 @@ def engineer_features(df):
     # Sort for lag features
     df = df.sort_values(['district', 'grade', 'date']).reset_index(drop=True)
     
-    # Lag features (previous prices)
+    # Lag features
     for lag in [1, 7, 14, 30]:
         df[f'avg_price_lag_{lag}'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].shift(lag)
         df[f'high_price_lag_{lag}'] = df.groupby(['district', 'grade'])['highest_price_rs_kg'].shift(lag)
         
-        # NEW: National price lags
         if has_national:
             df[f'nat_avg_lag_{lag}'] = df.groupby(['district', 'grade'])['national_average_price_rs_kg'].shift(lag)
             df[f'nat_high_lag_{lag}'] = df.groupby(['district', 'grade'])['national_highest_price_rs_kg'].shift(lag)
@@ -122,7 +141,6 @@ def engineer_features(df):
             lambda x: x.rolling(window=window, min_periods=1).std()
         )
         
-        # NEW: National rolling stats
         if has_national:
             df[f'nat_avg_roll_mean_{window}'] = df.groupby(['district', 'grade'])['national_average_price_rs_kg'].transform(
                 lambda x: x.rolling(window=window, min_periods=1).mean()
@@ -132,13 +150,12 @@ def engineer_features(df):
     df['price_change_7d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(7)
     df['price_change_30d'] = df.groupby(['district', 'grade'])['average_price_rs_kg'].pct_change(30)
     
-    # NEW: Price deviation from national average
+    # National comparison features
     if has_national:
         df['price_vs_national'] = (df['average_price_rs_kg'] - df['national_average_price_rs_kg']) / df['national_average_price_rs_kg']
         df['price_gap_absolute'] = df['average_price_rs_kg'] - df['national_average_price_rs_kg']
-        print("   ✓ Created national benchmark features")
     
-    # Drop rows with NaN from lag features
+    # Drop NaN
     df = df.dropna().reset_index(drop=True)
     
     print(f"   ✓ Created {len(df.columns)} features")
@@ -147,23 +164,22 @@ def engineer_features(df):
     return df
 
 # ============================================================================
-# STEP 3: PREPARE SEQUENCES FOR LSTM
+# STEP 3: PREPARE SEQUENCES
 # ============================================================================
 def create_sequences(df, lookback, forecast):
-    """Create sequences for time-series prediction"""
+    """Create sequences with separate output normalization"""
     print(f"\n📊 Creating sequences (lookback={lookback}, forecast={forecast})...")
     
-    # Check for national columns
     has_national = 'national_highest_price_rs_kg' in df.columns
     
-    # Encode categorical variables
+    # Encode categoricals
     district_encoder = LabelEncoder()
     grade_encoder = LabelEncoder()
     
     df['district_encoded'] = district_encoder.fit_transform(df['district'])
     df['grade_encoded'] = grade_encoder.fit_transform(df['grade'])
     
-    # Select features
+    # Select input features
     feature_cols = [
         'district_encoded', 'grade_encoded',
         'year', 'month', 'day', 'day_of_week', 'week_of_year', 'quarter',
@@ -171,26 +187,35 @@ def create_sequences(df, lookback, forecast):
         'average_price_rs_kg', 'highest_price_rs_kg',
     ]
     
-    # Add national columns if they exist
     if has_national:
         feature_cols.extend([
             'national_average_price_rs_kg',
             'national_highest_price_rs_kg'
         ])
     
-    # Add lag features
     lag_cols = [col for col in df.columns if 'lag_' in col or 'roll_' in col or 'change_' in col or 'vs_national' in col or 'gap_' in col]
     feature_cols.extend(lag_cols)
     
-    print(f"   ✓ Using {len(feature_cols)} features")
-    if has_national:
-        national_features = [col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col or 'gap_' in col]
-        print(f"   ✓ Including {len(national_features)} national-related features")
+    print(f"   ✓ Using {len(feature_cols)} input features")
     
-    # Normalize features
-    scaler = MinMaxScaler()
+    # Normalize INPUT features
+    input_scaler = MinMaxScaler()
     df_scaled = df.copy()
-    df_scaled[feature_cols] = scaler.fit_transform(df[feature_cols])
+    df_scaled[feature_cols] = input_scaler.fit_transform(df[feature_cols])
+    
+    # 🆕 DEFINE OUTPUT RANGES (already filtered, so use actual min/max)
+    output_avg_min = df['average_price_rs_kg'].min()
+    output_avg_max = df['average_price_rs_kg'].max()
+    output_high_min = df['highest_price_rs_kg'].min()
+    output_high_max = df['highest_price_rs_kg'].max()
+    
+    print(f"\n   📊 Output price ranges (for denormalization):")
+    print(f"      Average: {output_avg_min:.2f} - {output_avg_max:.2f} Rs/kg")
+    print(f"      Highest: {output_high_min:.2f} - {output_high_max:.2f} Rs/kg")
+    
+    def normalize_output(price, min_val, max_val):
+        """Normalize output to [0, 1]"""
+        return (price - min_val) / (max_val - min_val)
     
     X, y = [], []
     
@@ -198,43 +223,65 @@ def create_sequences(df, lookback, forecast):
     for (district, grade), group in df_scaled.groupby(['district', 'grade']):
         group = group.sort_values('date').reset_index(drop=True)
         
+        # Get original (unscaled) for output prices
+        group_original = df[
+            (df['district'] == district) & 
+            (df['grade'] == grade)
+        ].sort_values('date').reset_index(drop=True)
+        
         if len(group) < lookback + forecast:
             continue
         
         for i in range(len(group) - lookback - forecast + 1):
-            # Input: past 'lookback' days
+            # Input: scaled features
             X_seq = group[feature_cols].iloc[i:i+lookback].values
             
-            # Target: next 'forecast' days (avg and high prices)
-            y_avg = group['average_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
-            y_high = group['highest_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
+            # Output: ORIGINAL prices (then normalize)
+            y_avg = group_original['average_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
+            y_high = group_original['highest_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
+            
+            # Normalize outputs to [0, 1]
+            y_avg_norm = normalize_output(y_avg, output_avg_min, output_avg_max)
+            y_high_norm = normalize_output(y_high, output_high_min, output_high_max)
             
             X.append(X_seq)
-            y.append(np.concatenate([y_avg, y_high]))  # Shape: (14,) for 7 days
+            y.append(np.concatenate([y_avg_norm, y_high_norm]))
     
     X = np.array(X)
     y = np.array(y)
     
     print(f"   ✓ Created {len(X)} sequences")
-    print(f"   ✓ X shape: {X.shape}")  # (samples, lookback, features)
-    print(f"   ✓ y shape: {y.shape}")  # (samples, forecast*2)
+    print(f"   ✓ X shape: {X.shape}")
+    print(f"   ✓ y shape: {y.shape}")
     
-    return X, y, scaler, district_encoder, grade_encoder, feature_cols
+    # Store output denormalization parameters
+    output_denorm = {
+        'average_price': {
+            'min': float(output_avg_min),
+            'max': float(output_avg_max)
+        },
+        'highest_price': {
+            'min': float(output_high_min),
+            'max': float(output_high_max)
+        }
+    }
+    
+    return X, y, input_scaler, district_encoder, grade_encoder, feature_cols, output_denorm
 
 # ============================================================================
-# STEP 4: BUILD LSTM MODEL
+# STEP 4: BUILD MODEL
 # ============================================================================
 def build_model(input_shape, output_shape):
-    """Build LSTM model for multi-step forecasting"""
+    """Build LSTM model - NO sigmoid!"""
     print("\n🏗️  Building LSTM model...")
     
     model = keras.Sequential([
-    layers.LSTM(64, return_sequences=True, input_shape=input_shape),  # 128→64
-    layers.Dropout(0.3),  # 0.2→0.3
-    layers.LSTM(32, return_sequences=False),  # 64→32
-    layers.Dropout(0.3),  # 0.2→0.3
-    layers.Dense(32, activation='relu'),  # 64→32
-    layers.Dense(output_shape, activation='sigmoid')  # SIGMOID activated
+        layers.LSTM(64, return_sequences=True, input_shape=input_shape),
+        layers.Dropout(0.3),
+        layers.LSTM(32, return_sequences=False),
+        layers.Dropout(0.3),
+        layers.Dense(32, activation='relu'),
+        layers.Dense(output_shape)  # 🆕 LINEAR output
     ])
     
     model.compile(
@@ -244,13 +291,14 @@ def build_model(input_shape, output_shape):
     )
     
     print(model.summary())
+    print("\n   ✅ Using LINEAR output activation (no sigmoid)")
     return model
 
 # ============================================================================
 # STEP 5: TRAIN MODEL
 # ============================================================================
 def train_model(model, X_train, y_train, X_val, y_val):
-    """Train the model with early stopping"""
+    """Train with early stopping"""
     print("\n🚀 Training model...")
     
     callbacks = [
@@ -282,7 +330,7 @@ def train_model(model, X_train, y_train, X_val, y_val):
 # STEP 6: CONVERT TO TFLITE
 # ============================================================================
 def convert_to_tflite(model, output_path):
-    """Convert Keras model to TFLite format with LSTM support"""
+    """Convert to TFLite with LSTM support"""
     print("\n📱 Converting to TFLite...")
     
     try:
@@ -296,9 +344,7 @@ def convert_to_tflite(model, output_path):
         converter._experimental_lower_tensor_list_ops = False
         
         print("   ⚙️  Converter settings:")
-        print("      - TFLITE_BUILTINS: enabled")
-        print("      - SELECT_TF_OPS: enabled (for LSTM)")
-        print("      - Tensor list lowering: disabled")
+        print("      - TFLITE_BUILTINS + SELECT_TF_OPS (for LSTM)")
         
         tflite_model = converter.convert()
         
@@ -306,36 +352,64 @@ def convert_to_tflite(model, output_path):
             f.write(tflite_model)
         
         size_kb = len(tflite_model) / 1024
-        size_mb = size_kb / 1024
         
         print(f"\n✅ Saved TFLite model: {output_path}")
-        print(f"   Size: {size_kb:.2f} KB ({size_mb:.2f} MB)")
+        print(f"   Size: {size_kb:.2f} KB ({size_kb/1024:.2f} MB)")
         
         return tflite_model
         
     except Exception as e:
-        print(f"\n❌ TFLite conversion failed: {str(e)}")
-        print("\n💡 The Keras model (.h5) was saved and can be used with TensorFlow")
+        print(f"\n❌ TFLite conversion failed: {e}")
         return None
 
 # ============================================================================
-# STEP 7: SAVE METADATA
+# STEP 7: SAVE ARTIFACTS
 # ============================================================================
-def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config, test_loss, test_mae, has_national):
-    """Save preprocessing artifacts and config"""
+def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_denorm, config, test_loss, test_mae, has_national):
+    """Save all preprocessing artifacts"""
     print("\n💾 Saving metadata...")
     
-    # Save encoders and scaler
-    with open('models/scaler.pkl', 'wb') as f:
+    # Save pickle files
+    with open(MODELS_DIR / 'scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
     
-    with open('models/district_encoder.pkl', 'wb') as f:
+    with open(MODELS_DIR / 'district_encoder.pkl', 'wb') as f:
         pickle.dump(district_encoder, f)
     
-    with open('models/grade_encoder.pkl', 'wb') as f:
+    with open(MODELS_DIR / 'grade_encoder.pkl', 'wb') as f:
         pickle.dump(grade_encoder, f)
     
-    # Save config and feature list
+    # Create comprehensive preprocessing.json
+    preprocessing_data = {
+        'scaler': {
+            'min_values': scaler.data_min_.tolist(),
+            'max_values': scaler.data_max_.tolist(),
+            'feature_range': [0.0, 1.0]
+        },
+        'district_encoder': {
+            'classes': district_encoder.classes_.tolist(),
+            'mapping': {cls: int(i) for i, cls in enumerate(district_encoder.classes_)}
+        },
+        'grade_encoder': {
+            'classes': grade_encoder.classes_.tolist(),
+            'mapping': {cls: int(i) for i, cls in enumerate(grade_encoder.classes_)}
+        },
+        'feature_columns': feature_cols,
+        'config': config,
+        'num_features': len(feature_cols),
+        'lookback_days': config['lookback_days'],
+        'forecast_days': config['forecast_days'],
+        'output_denormalization': output_denorm,  # 🆕 CRITICAL FIX
+        'has_national_features': has_national,
+        'national_features': [col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col or 'gap_' in col] if has_national else [],
+        'national_feature_count': len([col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col or 'gap_' in col])
+    }
+    
+    # Save preprocessing.json
+    with open(MODELS_DIR / 'preprocessing.json', 'w') as f:
+        json.dump(preprocessing_data, f, indent=2)
+    
+    # Save metadata.json (backward compatibility)
     metadata = {
         'config': config,
         'feature_cols': feature_cols,
@@ -345,59 +419,56 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, config,
         'trained_on': datetime.now().isoformat(),
         'test_loss': float(test_loss),
         'test_mae': float(test_mae),
-        'has_national_features': has_national  # NEW: Flag for national features
+        'has_national_features': has_national
     }
     
-    with open('models/metadata.json', 'w') as f:
+    with open(MODELS_DIR / 'metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print("   ✓ Saved preprocessing artifacts")
+    print("   ✓ Saved preprocessing.json (includes output_denormalization)")
+    print("   ✓ Saved metadata.json")
+    print("   ✓ Saved encoder pickles")
 
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 def main():
     print("=" * 70)
-    print("🌿 CINNAMON GRADES PRICE PREDICTION - TRAINING PIPELINE")
-    print("   (Now with National Benchmark Features)")
+    print("🌿 CINNAMON PRICE PREDICTION - FIXED TRAINING")
+    print("=" * 70)
+    print("Key fixes:")
+    print("  - Removed sigmoid activation (was causing low predictions)")
+    print("  - Added proper output normalization [0,1]")
+    print("  - Saved correct output_denormalization parameters")
+    print("  - Filtered outliers > 6000 Rs")
     print("=" * 70)
     
-    # Create output directory
-    import os
-    os.makedirs('models', exist_ok=True)
-    
-    csv_path = DATA_DIR / "cinnamon_grades.csv"
-    
     MODELS_DIR.mkdir(exist_ok=True)
-
-    # Load and clean data
-    df = load_and_clean_data(DATA_PATH)
-    has_national = 'national_highest_price_rs_kg' in df.columns
+    
+    # Load data
+    df, has_national = load_and_clean_data(DATA_PATH)
     
     # Feature engineering
     df = engineer_features(df)
     
     # Create sequences
-    X, y, scaler, district_enc, grade_enc, feature_cols = create_sequences(
+    X, y, scaler, district_enc, grade_enc, feature_cols, output_denorm = create_sequences(
         df, CONFIG['lookback_days'], CONFIG['forecast_days']
     )
     
-    # Train/val/test split (time-based)
+    # Split data
     test_size = int(len(X) * CONFIG['test_split'])
     val_size = int(len(X) * CONFIG['validation_split'])
     train_size = len(X) - test_size - val_size
     
-    X_train = X[:train_size]
-    y_train = y[:train_size]
-    X_val = X[train_size:train_size+val_size]
-    y_val = y[train_size:train_size+val_size]
-    X_test = X[train_size+val_size:]
-    y_test = y[train_size+val_size:]
+    X_train, y_train = X[:train_size], y[:train_size]
+    X_val, y_val = X[train_size:train_size+val_size], y[train_size:train_size+val_size]
+    X_test, y_test = X[train_size+val_size:], y[train_size+val_size:]
     
     print(f"\n📊 Data splits:")
-    print(f"   Train: {len(X_train)} samples")
-    print(f"   Val:   {len(X_val)} samples")
-    print(f"   Test:  {len(X_test)} samples")
+    print(f"   Train: {len(X_train)}")
+    print(f"   Val:   {len(X_val)}")
+    print(f"   Test:  {len(X_test)}")
     
     # Build model
     model = build_model(
@@ -405,50 +476,47 @@ def main():
         output_shape=CONFIG['forecast_days'] * 2
     )
     
-    # Train model
+    # Train
     history = train_model(model, X_train, y_train, X_val, y_val)
     
-    # Evaluate on test set
+    # Evaluate
     print("\n📈 Evaluating on test set...")
     test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
-
-    # UNSCALE MAE to get real price error
-    price_feature_idx = feature_cols.index('average_price_rs_kg')
-    price_min = scaler.data_min_[price_feature_idx]
-    price_max = scaler.data_max_[price_feature_idx]
-    price_range = price_max - price_min
-    real_mae = test_mae * price_range
-
+    
+    # Calculate real MAE
+    avg_range = output_denorm['average_price']['max'] - output_denorm['average_price']['min']
+    real_mae = test_mae * avg_range
+    
     print(f"   Test Loss (MSE): {test_loss:.4f}")
     print(f"   Test MAE (scaled): {test_mae:.4f}")
     print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")
-    print(f"   Price range in data: {price_min:.2f} - {price_max:.2f} Rs/kg")
+    print(f"   Price range: {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
     
-    # Save Keras model
-    model.save('models/cinnamon_grades_model.h5')
-    print("\n✅ Saved Keras model: models/cinnamon_grades_model.h5")
+    # Save model
+    model.save(MODELS_DIR / 'cinnamon_grades_model.h5')
+    print("\n✅ Saved Keras model")
     
     # Convert to TFLite
-    convert_to_tflite(model, 'models/cinnamon_grades_model.tflite')
+    convert_to_tflite(model, MODELS_DIR / 'cinnamon_grades_model.tflite')
     
     # Save metadata
-    save_metadata(scaler, district_enc, grade_enc, feature_cols, CONFIG, test_loss, test_mae, has_national)
-
+    save_metadata(scaler, district_enc, grade_enc, feature_cols, output_denorm, CONFIG, test_loss, test_mae, has_national)
+    
     print("\n" + "=" * 70)
     print("✅ TRAINING COMPLETE!")
     print("=" * 70)
     print("\n📦 Output files:")
-    print("   - models/cinnamon_grades_model.h5 (Keras)")
-    print("   - models/cinnamon_grades_model.tflite (Mobile)")
-    print("   - models/scaler.pkl")
-    print("   - models/district_encoder.pkl")
-    print("   - models/grade_encoder.pkl")
-    print("   - models/metadata.json")
+    print("   - cinnamon_grades_model.h5")
+    print("   - cinnamon_grades_model.tflite")
+    print("   - preprocessing.json (✨ with output_denormalization)")
+    print("   - scaler.pkl, district_encoder.pkl, grade_encoder.pkl")
+    print("   - metadata.json")
     
     if has_national:
-        print("\n✨ Model trained with national benchmark features!")
-        national_feature_count = len([col for col in feature_cols if 'national' in col or 'nat_' in col or 'vs_national' in col])
-        print(f"   National features used: {national_feature_count}")
+        nat_count = len([c for c in feature_cols if 'national' in c or 'nat_' in c])
+        print(f"\n✨ Trained with {nat_count} national benchmark features")
+    
+    print("\n🚀 Deploy the new model and preprocessing.json to fix predictions!")
 
 if __name__ == "__main__":
     main()
