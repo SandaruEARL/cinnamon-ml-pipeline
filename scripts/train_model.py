@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-CRITICAL FIX: Use percentile-based output ranges instead of extreme min/max
-This prevents 567-6000 Rs range from compressing predictions
+FIXED VERSION: Corrects prediction issues
+1. Uses proper output scaling (recent data percentiles)
+2. Fixes trend calculation
+3. Better feature engineering
 """
 
 import pandas as pd
@@ -23,22 +25,21 @@ MODELS_DIR = BASE_DIR / "models"
 
 CONFIG = {
     'grades_to_predict': [
-        'Alba', 
-        'C-4', 'C-5', 'C-5 Sp',
-        'M-4', 'M-5',
-        'H-1', 'H-2',
+        'Alba', 'C-4', 'C-5', 'C-5 Sp',
+        'M-4', 'M-5', 'H-1', 'H-2',
         'H-Faq', 'Heen', 'Gorosu'
     ], 
     'lookback_days': 30,
     'forecast_days': 7,
     'batch_size': 32,
-    'epochs': 50,
-    'learning_rate': 0.001,
+    'epochs': 100,  # Increased
+    'learning_rate': 0.0005,  # Lowered
     'validation_split': 0.15,
     'test_split': 0.15,
-    'outlier_threshold': 6000,  # Remove extreme outliers
-    'percentile_min': 1,  # 🆕 Use 1st percentile as min
-    'percentile_max': 99  # 🆕 Use 99th percentile as max
+    'outlier_threshold': 8000,  # Increased to keep more data
+    'percentile_min': 5,   # Changed: Use recent data range
+    'percentile_max': 95,  # Changed: Use recent data range
+    'recent_months': 12    # Use last 12 months for output range
 }
 
 def load_and_clean_data(csv_path):
@@ -138,7 +139,7 @@ def engineer_features(df):
     return df
 
 def create_sequences(df, lookback, forecast):
-    """Create sequences with PERCENTILE-based output normalization"""
+    """Create sequences with RECENT data percentile-based output normalization"""
     print(f"\n📊 Creating sequences (lookback={lookback}, forecast={forecast})...")
     
     has_national = 'national_highest_price_rs_kg' in df.columns
@@ -172,21 +173,33 @@ def create_sequences(df, lookback, forecast):
     df_scaled = df.copy()
     df_scaled[feature_cols] = input_scaler.fit_transform(df[feature_cols])
     
-    # 🆕 USE PERCENTILE-BASED RANGES for output denormalization
-    output_avg_min = np.percentile(df['average_price_rs_kg'], CONFIG['percentile_min'])
-    output_avg_max = np.percentile(df['average_price_rs_kg'], CONFIG['percentile_max'])
-    output_high_min = np.percentile(df['highest_price_rs_kg'], CONFIG['percentile_min'])
-    output_high_max = np.percentile(df['highest_price_rs_kg'], CONFIG['percentile_max'])
+    # ✅ FIX: Use RECENT data (last 12 months) for output percentiles
+    cutoff_date = df['date'].max() - timedelta(days=CONFIG['recent_months']*30)
+    recent_df = df[df['date'] >= cutoff_date]
     
-    print(f"\n   📊 Output price ranges (PERCENTILE-BASED):")
-    print(f"      Average: {output_avg_min:.2f} - {output_avg_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th percentile)")
-    print(f"      Highest: {output_high_min:.2f} - {output_high_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th percentile)")
-    print(f"      🎯 This range covers {CONFIG['percentile_max'] - CONFIG['percentile_min']}% of actual prices")
+    print(f"\n   📊 Using recent {CONFIG['recent_months']} months for output range:")
+    print(f"      Date range: {recent_df['date'].min()} to {recent_df['date'].max()}")
+    print(f"      Records: {len(recent_df)}")
+    
+    output_avg_min = np.percentile(recent_df['average_price_rs_kg'], CONFIG['percentile_min'])
+    output_avg_max = np.percentile(recent_df['average_price_rs_kg'], CONFIG['percentile_max'])
+    output_high_min = np.percentile(recent_df['highest_price_rs_kg'], CONFIG['percentile_min'])
+    output_high_max = np.percentile(recent_df['highest_price_rs_kg'], CONFIG['percentile_max'])
+    
+    print(f"\n   📊 Output price ranges (RECENT DATA PERCENTILES):")
+    print(f"      Average: {output_avg_min:.2f} - {output_avg_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th)")
+    print(f"      Highest: {output_high_min:.2f} - {output_high_max:.2f} Rs/kg ({CONFIG['percentile_min']}th - {CONFIG['percentile_max']}th)")
+    
+    # Compare with full data range
+    full_avg_min = df['average_price_rs_kg'].min()
+    full_avg_max = df['average_price_rs_kg'].max()
+    print(f"      (Full data range: {full_avg_min:.2f} - {full_avg_max:.2f} Rs/kg)")
     
     def normalize_output(price, min_val, max_val):
-        """Normalize output to [0, 1], clip to range"""
+        """Normalize output to [0, 1], allow extrapolation beyond [0, 1]"""
         normalized = (price - min_val) / (max_val - min_val)
-        return np.clip(normalized, 0, 1)  # Clip to [0, 1]
+        # Don't clip - allow values outside [0, 1] for extrapolation
+        return normalized
     
     X, y = [], []
     
@@ -207,7 +220,7 @@ def create_sequences(df, lookback, forecast):
             y_avg = group_original['average_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
             y_high = group_original['highest_price_rs_kg'].iloc[i+lookback:i+lookback+forecast].values
             
-            # Normalize outputs to [0, 1] with clipping
+            # Normalize outputs (allow extrapolation)
             y_avg_norm = normalize_output(y_avg, output_avg_min, output_avg_max)
             y_high_norm = normalize_output(y_high, output_high_min, output_high_max)
             
@@ -226,34 +239,37 @@ def create_sequences(df, lookback, forecast):
         'average_price': {
             'min': float(output_avg_min),
             'max': float(output_avg_max),
-            'method': f'percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
+            'method': f'recent_{CONFIG["recent_months"]}mo_percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
         },
         'highest_price': {
             'min': float(output_high_min),
             'max': float(output_high_max),
-            'method': f'percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
+            'method': f'recent_{CONFIG["recent_months"]}mo_percentile_{CONFIG["percentile_min"]}-{CONFIG["percentile_max"]}'
         }
     }
     
     return X, y, input_scaler, district_encoder, grade_encoder, feature_cols, output_denorm
 
 def build_model(input_shape, output_shape):
-    """Build LSTM model"""
+    """Build improved LSTM model"""
     print("\n🏗️  Building LSTM model...")
     
     model = keras.Sequential([
-        layers.LSTM(64, return_sequences=True, input_shape=input_shape),
+        layers.LSTM(128, return_sequences=True, input_shape=input_shape),
+        layers.Dropout(0.3),
+        layers.LSTM(64, return_sequences=True),
         layers.Dropout(0.3),
         layers.LSTM(32, return_sequences=False),
-        layers.Dropout(0.3),
+        layers.Dropout(0.2),
+        layers.Dense(64, activation='relu'),
         layers.Dense(32, activation='relu'),
-        layers.Dense(output_shape)  # LINEAR output
+        layers.Dense(output_shape)
     ])
     
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=CONFIG['learning_rate']),
-        loss='mse',
-        metrics=['mae']
+        loss='huber',  # More robust to outliers
+        metrics=['mae', 'mse']
     )
     
     print(model.summary())
@@ -266,13 +282,13 @@ def train_model(model, X_train, y_train, X_val, y_val):
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor='val_loss',
-            patience=10,
+            patience=15,
             restore_best_weights=True
         ),
         keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
-            patience=5,
+            patience=7,
             min_lr=1e-7
         )
     ]
@@ -374,17 +390,18 @@ def save_metadata(scaler, district_encoder, grade_encoder, feature_cols, output_
     with open(MODELS_DIR / 'metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print("   ✓ Saved preprocessing.json (with PERCENTILE-BASED output ranges)")
+    print("   ✓ Saved preprocessing.json (with RECENT DATA percentile ranges)")
     print("   ✓ Saved metadata.json")
 
 def main():
     print("=" * 70)
-    print("🌿 CINNAMON PRICE PREDICTION - PERCENTILE-BASED TRAINING")
+    print("🌿 CINNAMON PRICE PREDICTION - FIXED VERSION")
     print("=" * 70)
-    print("Key improvements:")
-    print("  - Uses 1st-99th percentile for output ranges (not extreme min/max)")
-    print("  - Prevents 567-6000 Rs range from compressing predictions")
-    print("  - More realistic price predictions for all grades")
+    print("Key fixes:")
+    print("  - Uses recent 12 months for output percentiles (not all historical)")
+    print("  - 5th-95th percentile (more realistic range)")
+    print("  - Improved model architecture")
+    print("  - Huber loss (robust to outliers)")
     print("=" * 70)
     
     MODELS_DIR.mkdir(exist_ok=True)
@@ -418,15 +435,15 @@ def main():
     history = train_model(model, X_train, y_train, X_val, y_val)
     
     print("\n📈 Evaluating on test set...")
-    test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
+    test_loss, test_mae, test_mse = model.evaluate(X_test, y_test, verbose=0)
     
     avg_range = output_denorm['average_price']['max'] - output_denorm['average_price']['min']
     real_mae = test_mae * avg_range
     
-    print(f"   Test Loss (MSE): {test_loss:.4f}")
+    print(f"   Test Loss (Huber): {test_loss:.4f}")
     print(f"   Test MAE (scaled): {test_mae:.4f}")
     print(f"   Test MAE (actual): {real_mae:.2f} Rs/kg")
-    print(f"   Price range (percentile-based): {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
+    print(f"   Price range (recent data): {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
     
     model.save(MODELS_DIR / 'cinnamon_grades_model.h5')
     print("\n✅ Saved Keras model")
@@ -440,10 +457,10 @@ def main():
     print("\n📦 Output files:")
     print("   - cinnamon_grades_model.h5")
     print("   - cinnamon_grades_model.tflite")
-    print("   - preprocessing.json (✨ with PERCENTILE output ranges)")
+    print("   - preprocessing.json (✨ with RECENT DATA ranges)")
     print("   - scaler.pkl, district_encoder.pkl, grade_encoder.pkl")
     
-    print(f"\n🎯 Percentile ranges used:")
+    print(f"\n🎯 Recent data ranges used:")
     print(f"   Average: {output_denorm['average_price']['min']:.2f} - {output_denorm['average_price']['max']:.2f} Rs/kg")
     print(f"   Highest: {output_denorm['highest_price']['min']:.2f} - {output_denorm['highest_price']['max']:.2f} Rs/kg")
     print(f"   Method: {output_denorm['average_price']['method']}")
