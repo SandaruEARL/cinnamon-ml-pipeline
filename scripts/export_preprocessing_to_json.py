@@ -2,6 +2,7 @@
 """
 Export preprocessing artifacts to JSON for Flutter/Dart consumption
 CRITICAL FIX: Includes output_denormalization for correct price predictions
+             + Filters out extreme price outliers (> 6000 Rs)
 """
 
 import pickle
@@ -42,7 +43,36 @@ def export_to_json():
     df = df[df['district'].str.lower() != 'national'].copy()
     df = df[df['district'] != 'Average Price'].copy()
     
-    # Get ACTUAL price ranges from the data (what model was trained on)
+    # ✅ NEW: Filter out extreme outliers (prices > 6000 Rs)
+    # These are likely data errors or one-off extreme spikes that skew the model
+    print("   Filtering outliers...")
+    original_count = len(df)
+    
+    # Count outliers before filtering
+    avg_outliers = len(df[df['average_price_rs_kg'] > 6000])
+    high_outliers = len(df[df['highest_price_rs_kg'] > 6000])
+    
+    if avg_outliers > 0 or high_outliers > 0:
+        print(f"   ⚠️  Found outliers: {avg_outliers} avg prices, {high_outliers} high prices > 6000 Rs")
+        
+        # Show the outliers for transparency
+        if avg_outliers > 0:
+            outlier_records = df[df['average_price_rs_kg'] > 6000][['date', 'district', 'grade', 'average_price_rs_kg']].head(5)
+            print(f"   Sample outliers:")
+            for _, row in outlier_records.iterrows():
+                print(f"      {row['date'].strftime('%Y-%m-%d')} {row['district']} {row['grade']}: Rs. {row['average_price_rs_kg']:.0f}")
+    
+    # Filter out outliers
+    df = df[df['average_price_rs_kg'] <= 6000].copy()
+    df = df[df['highest_price_rs_kg'] <= 6000].copy()
+    
+    filtered_count = original_count - len(df)
+    if filtered_count > 0:
+        print(f"   ✓ Filtered out {filtered_count} outlier records (>{((filtered_count/original_count)*100):.2f}% of data)")
+    else:
+        print(f"   ✓ No outliers found (all prices <= 6000 Rs)")
+    
+    # Get ACTUAL price ranges from the filtered data (what model should denormalize to)
     avg_price_min = float(df['average_price_rs_kg'].min())
     avg_price_max = float(df['average_price_rs_kg'].max())
     high_price_min = float(df['highest_price_rs_kg'].min())
@@ -78,7 +108,7 @@ def export_to_json():
         'lookback_days': metadata['config']['lookback_days'],
         'forecast_days': metadata['config']['forecast_days'],
         
-        # CRITICAL: Separate output denormalization ranges (from actual data)
+        # CRITICAL: Separate output denormalization ranges (from filtered data)
         'output_denormalization': {
             'average_price': {
                 'min': avg_price_min,
@@ -164,7 +194,7 @@ def export_recent_data():
 def main():
     print("=" * 70)
     print("📦 EXPORTING PREPROCESSING ARTIFACTS FOR FLUTTER")
-    print("   (With Output Denormalization Fix)")
+    print("   (With Output Denormalization Fix + Outlier Filtering)")
     print("=" * 70)
     
     # Export preprocessing parameters
@@ -186,6 +216,7 @@ def main():
         print(f"   National-related: {preprocessing['national_feature_count']}")
     
     print("\n🚀 Deploy these files to fix prediction denormalization!")
+    print("\n💡 Note: Outliers > 6000 Rs were filtered from denormalization ranges")
 
 if __name__ == "__main__":
     main()
