@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-INCREMENTAL CINNAMON SCRAPER (WITH NATIONAL VALUES)
+INCREMENTAL CINNAMON SCRAPER
 Scrapes ONLY last 4 weeks of data (for weekly automation)
-Now includes national benchmark prices
-
+Uses same pattern as full scraper
 """
 
 import requests
@@ -41,12 +40,14 @@ def fetch_page(url, max_retries=3):
 def parse_date_from_text(text):
     """Parse date from link text like '05-January-2016' or '01.11.2016'"""
     try:
+        # Try format: DD-Month-YYYY
         for fmt in ['%d-%B-%Y', '%d-%b-%Y', '%d.%m.%Y']:
             try:
                 return datetime.strptime(text, fmt)
             except:
                 continue
         
+        # Try extracting date from text
         match = re.search(r'(\d{1,2})[-.](\w+)[-.](\d{4})', text)
         if match:
             day, month, year = match.groups()
@@ -62,7 +63,10 @@ def parse_date_from_text(text):
     return None
 
 def fetch_recent_urls_from_index(cutoff_date):
-    """Fetch URLs from index page for dates >= cutoff_date"""
+    """
+    Fetch URLs from index page for dates >= cutoff_date
+    Returns: {date_obj: relative_url} for recent dates only
+    """
     print(f"🔍 Fetching index page for dates >= {cutoff_date.strftime('%Y-%m-%d')}...")
     
     html = fetch_page(INDEX_URL)
@@ -72,12 +76,14 @@ def fetch_recent_urls_from_index(cutoff_date):
     
     soup = BeautifulSoup(html, 'html.parser')
     
-    url_map = {}
+    url_map = {}  # {date_obj: relative_url}
     
-    current_year = datetime.now().year  # ← DEFINE ONCE HERE
+    # Get current and previous year (in case we're near year boundary)
+    current_year = datetime.now().year
     years_to_check = [current_year, current_year - 1]
     
     for year in years_to_check:
+        # Find year header
         year_header = None
         for center in soup.find_all('center'):
             h1 = center.find('h1')
@@ -88,6 +94,7 @@ def fetch_recent_urls_from_index(cutoff_date):
         if not year_header:
             continue
         
+        # Find all <a> tags AFTER this year header
         current = year_header
         
         while True:
@@ -96,22 +103,22 @@ def fetch_recent_urls_from_index(cutoff_date):
             if not current:
                 break
             
-            # Add dynamic year boundary detection
+            # Stop if we hit next year's header
             if current.name == 'center':
-               h1 = current.find('h1')
-               if h1:
-                 # REMOVE: current_year = datetime.now().year  
-                 next_year_str = str(year + 1) if year <= current_year else str(year - 1)
-                 if next_year_str in h1.get_text():
+                h1 = current.find('h1')
+                if h1 and (str(year + 1) in h1.get_text() or str(year - 1) in h1.get_text()):
                     break
             
+            # Process links
             if current.name == 'a':
                 href = current.get('href', '')
                 
+                # Check if link is for current year
                 if href.startswith(f"{year}/"):
                     link_text = current.get_text(strip=True)
                     date_obj = parse_date_from_text(link_text)
                     
+                    # Only include dates >= cutoff_date
                     if date_obj and date_obj >= cutoff_date:
                         url_map[date_obj] = href
     
@@ -129,17 +136,20 @@ def clean_price(price_str):
         return None
 
 def extract_cinnamon_grades(soup, date_str):
-    """Extract cinnamon grade prices from CINNAMON table - INCLUDING NATIONAL VALUES"""
+    """Extract cinnamon grade prices from CINNAMON table"""
     data = []
     
+    # Find CINNAMON anchor
     cinnamon_anchor = soup.find('a', {'name': 'cinnamon'})
     
     if not cinnamon_anchor:
         return data
     
+    # Find table after anchor
     table = cinnamon_anchor.find_next('table', {'id': 'rt2'})
     
     if not table:
+        # Fallback: look for table with cinnamon grades
         for tbl in soup.find_all('table'):
             headers = tbl.find_all('th')
             header_text = ' '.join([h.get_text().upper() for h in headers])
@@ -150,6 +160,7 @@ def extract_cinnamon_grades(soup, date_str):
     if not table:
         return data
     
+    # Extract headers
     thead = table.find('thead')
     if not thead:
         return data
@@ -174,6 +185,7 @@ def extract_cinnamon_grades(soup, date_str):
         else:
             i += 1
     
+    # Extract data rows
     tbody = table.find('tbody')
     if not tbody:
         return data
@@ -187,10 +199,8 @@ def extract_cinnamon_grades(soup, date_str):
         
         district = cells[0].get_text(strip=True)
         
-        if not district or district.lower() in ['district', 'total']:
+        if not district or district.lower() in ['district', 'national', 'total']:
             continue
-        
-        is_national = district.lower() == 'national'
         
         col_idx = 1
         for grade in grades:
@@ -199,57 +209,39 @@ def extract_cinnamon_grades(soup, date_str):
                 average = clean_price(cells[col_idx + 1].get_text(strip=True))
                 
                 if highest is not None or average is not None:
-                    record = {
+                    data.append({
                         'date': date_str,
                         'district': district,
                         'grade': grade,
                         'highest_price_rs_kg': highest,
                         'average_price_rs_kg': average
-                    }
-                    
-                    if not is_national:
-                        record['national_highest_price_rs_kg'] = None
-                        record['national_average_price_rs_kg'] = None
-                    
-                    data.append(record)
+                    })
                 
                 col_idx += 2
     
-    # Create national values lookup and update district rows
-    national_values = {}
-    for record in data:
-        if record['district'].lower() == 'national':
-            national_values[record['grade']] = {
-                'highest': record['highest_price_rs_kg'],
-                'average': record['average_price_rs_kg']
-            }
-    
-    updated_data = []
-    for record in data:
-        if record['district'].lower() != 'national':
-            grade = record['grade']
-            if grade in national_values:
-                record['national_highest_price_rs_kg'] = national_values[grade]['highest']
-                record['national_average_price_rs_kg'] = national_values[grade]['average']
-            updated_data.append(record)
-    
-    return updated_data
+    return data
 
 def scrape_last_4_weeks(existing_csv_path=None):
-    """Scrape ONLY last 4 weeks of data with national values"""
+    """
+    Scrape ONLY last 4 weeks of data
+    Optionally merges with existing CSV
+    """
     print("\n" + "="*80)
-    print("🔄 INCREMENTAL SCRAPER - Last 4 Weeks (with National Values)")
+    print("🔄 INCREMENTAL SCRAPER - Last 4 Weeks")
     print("="*80)
     
+    # Calculate cutoff date (28 days ago)
     cutoff_date = datetime.now() - timedelta(days=28)
     print(f"📅 Scraping dates from: {cutoff_date.strftime('%Y-%m-%d')} to today")
     
+    # Step 1: Get recent URLs from index
     url_map = fetch_recent_urls_from_index(cutoff_date)
     
     if not url_map:
         print("⚠️  No recent URLs found in index")
         return None
     
+    # Step 2: Scrape each URL
     all_grades = []
     success_count = 0
     
@@ -289,34 +281,30 @@ def scrape_last_4_weeks(existing_csv_path=None):
         print("❌ No new data collected")
         return None
     
+    # Create DataFrame for new data
     new_df = pd.DataFrame(all_grades)
     
-    # Merge with existing data if provided
+    # Step 3: Merge with existing data if provided
     if existing_csv_path and os.path.exists(existing_csv_path):
         print(f"\n🔗 Merging with existing data: {existing_csv_path}")
         
         existing_df = pd.read_csv(existing_csv_path)
         print(f"  Existing records: {len(existing_df)}")
         
-        # Check if existing data has national columns
-        has_national_existing = 'national_highest_price_rs_kg' in existing_df.columns
-        has_national_new = 'national_highest_price_rs_kg' in new_df.columns
-        
-        if not has_national_existing and has_national_new:
-            print("  ⚠️  Existing data lacks national columns - adding them as NaN")
-            existing_df['national_highest_price_rs_kg'] = None
-            existing_df['national_average_price_rs_kg'] = None
-        
+        # Parse dates for both
         existing_df['date_parsed'] = pd.to_datetime(existing_df['date'], format='%d.%m.%Y')
         new_df['date_parsed'] = pd.to_datetime(new_df['date'], format='%d.%m.%Y')
         
+        # Combine
         combined = pd.concat([existing_df, new_df], ignore_index=True)
         
+        # Remove duplicates (keep latest)
         combined = combined.drop_duplicates(
             subset=['date', 'district', 'grade'], 
             keep='last'
         )
         
+        # Sort by date
         combined = combined.sort_values('date_parsed')
         combined = combined.drop('date_parsed', axis=1)
         
@@ -325,6 +313,7 @@ def scrape_last_4_weeks(existing_csv_path=None):
         
         return combined
     else:
+        # No existing data, just return new data
         new_df['date_parsed'] = pd.to_datetime(new_df['date'], format='%d.%m.%Y')
         new_df = new_df.sort_values('date_parsed')
         new_df = new_df.drop('date_parsed', axis=1)
@@ -333,15 +322,17 @@ def scrape_last_4_weeks(existing_csv_path=None):
 
 if __name__ == "__main__":
     print("\n" + "="*80)
-    print("🔄 INCREMENTAL CINNAMON SCRAPER (WITH NATIONAL VALUES)")
+    print("🔄 INCREMENTAL CINNAMON SCRAPER")
     print("   Scrapes ONLY last 4 weeks for weekly updates")
     print("="*80)
     
+    # Look for existing data in parent directory (repository structure)
     existing_csv = "../data/cinnamon_grades.csv"
     
     if os.path.exists(existing_csv):
         print(f"\n✓ Found existing data: {existing_csv}")
-        if os.environ.get('CI'):
+        # Auto-merge in CI environment, prompt otherwise
+        if os.environ.get('CI'):  # GitHub Actions sets CI=true
             print("🤖 CI mode: Auto-merging with existing data")
         else:
             choice = input("Merge with existing data? (y/n): ").strip().lower()
@@ -367,10 +358,6 @@ if __name__ == "__main__":
         print(f"📅 Date range: {df['date'].min()} → {df['date'].max()}")
         print(f"🏷️  Grades: {', '.join(sorted(df['grade'].unique()))}")
         print(f"📍 Districts: {df['district'].nunique()}")
-        
-        # Check for national columns
-        if 'national_highest_price_rs_kg' in df.columns:
-            print(f"✨ National benchmark columns: INCLUDED")
         
         print(f"\n📊 Latest 3 records:")
         print(df.tail(3).to_string(index=False))
