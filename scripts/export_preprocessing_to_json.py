@@ -2,6 +2,7 @@
 """
 Export preprocessing artifacts to JSON for Flutter/Dart consumption
 UPDATED: Handles National as a regular district
+UPDATED: Exports WEEKLY model metadata (lookback_weeks, forecast_weeks)
 """
 
 import pickle
@@ -32,6 +33,10 @@ def export_to_json():
     
     # Export scaler parameters
     print("   Converting scaler parameters...")
+    
+    # Check if this is a weekly or daily model
+    is_weekly = metadata.get('data_frequency') == 'weekly'
+    
     preprocessing = {
         'scaler': {
             'min_values': scaler.data_min_.tolist(),
@@ -49,10 +54,20 @@ def export_to_json():
         'feature_columns': metadata['feature_cols'],
         'config': metadata['config'],
         'num_features': len(metadata['feature_cols']),
-        'lookback_days': metadata['config']['lookback_days'],
-        'forecast_days': metadata['config']['forecast_days'],
-        'uses_national_features': metadata.get('uses_national_features', False)  # NEW: Flag
+        'uses_national_features': metadata.get('uses_national_features', False),
+        'data_frequency': metadata.get('data_frequency', 'daily'),  # NEW: weekly or daily
     }
+    
+    # Add appropriate lookback/forecast based on model type
+    if is_weekly:
+        preprocessing['lookback_weeks'] = metadata['config']['lookback_weeks']
+        preprocessing['forecast_weeks'] = metadata['config']['forecast_weeks']
+        print("   ✨ WEEKLY MODEL DETECTED")
+        print(f"      Lookback: {metadata['config']['lookback_weeks']} weeks")
+        print(f"      Forecast: {metadata['config']['forecast_weeks']} weeks")
+    else:
+        preprocessing['lookback_days'] = metadata['config'].get('lookback_days', 30)
+        preprocessing['forecast_days'] = metadata['config'].get('forecast_days', 7)
     
     # Save to JSON
     output_path = MODELS_DIR / 'preprocessing.json'
@@ -73,10 +88,16 @@ def export_to_json():
     return preprocessing
 
 def export_recent_data():
-    """Export last 30 days of data per district/grade combination"""
+    """Export recent data based on model type (weekly or daily)"""
     print("\n📊 Exporting recent historical data...")
     
     import pandas as pd
+    
+    # Load metadata to check model type
+    with open(MODELS_DIR / 'metadata.json', 'r') as f:
+        metadata = json.load(f)
+    
+    is_weekly = metadata.get('data_frequency') == 'weekly'
     
     # Load full dataset
     data_path = BASE_DIR / "data" / "cinnamon_grades.csv"
@@ -97,8 +118,36 @@ def export_recent_data():
     # Sort by date
     df = df.sort_values('date')
     
-    # Get last 30 records per district+grade combination (includes National)
-    recent = df.groupby(['district', 'grade']).tail(30).reset_index(drop=True)
+    if is_weekly:
+        # For weekly model: resample to weekly first, then get last 12 weeks
+        print("   📅 Resampling to weekly frequency for export...")
+        df = df.set_index('date')
+        
+        weekly_data = []
+        for (district, grade), group in df.groupby(['district', 'grade']):
+            weekly = group.resample('W').agg({
+                'average_price_rs_kg': 'last',
+                'highest_price_rs_kg': 'last'
+            }).reset_index()
+            
+            weekly['district'] = district
+            weekly['grade'] = grade
+            weekly['average_price_rs_kg'] = weekly['average_price_rs_kg'].ffill()
+            weekly['highest_price_rs_kg'] = weekly['highest_price_rs_kg'].ffill()
+            weekly = weekly.dropna()
+            
+            weekly_data.append(weekly)
+        
+        df = pd.concat(weekly_data, ignore_index=True)
+        df = df.sort_values('date')
+        
+        # Get last 12 weeks per district+grade
+        recent = df.groupby(['district', 'grade']).tail(12).reset_index(drop=True)
+        print(f"   ✨ Exported last 12 WEEKS per district/grade")
+    else:
+        # For daily model: get last 30 records per district+grade
+        recent = df.groupby(['district', 'grade']).tail(30).reset_index(drop=True)
+        print(f"   Exported last 30 records per district/grade")
     
     # Save to CSV
     output_path = MODELS_DIR / 'recent_data.csv'
@@ -136,7 +185,15 @@ def main():
     print("   - models/preprocessing.json")
     print("   - models/recent_data.csv")
     print("\n🚀 These files should be deployed to your public repository")
-    print("\n💡 Note: National prices are included as district='National'")
+    print("\n💡 Notes:")
+    print("   - National prices are included as district='National'")
+    
+    if preprocessing.get('data_frequency') == 'weekly':
+        print("   - Model is WEEKLY: predicts next 4 weeks")
+        print(f"   - Lookback: {preprocessing['lookback_weeks']} weeks")
+        print(f"   - Forecast: {preprocessing['forecast_weeks']} weeks")
+    else:
+        print("   - Model is DAILY: predicts next 7 days")
 
 if __name__ == "__main__":
     main()

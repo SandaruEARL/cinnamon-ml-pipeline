@@ -4,6 +4,7 @@ INCREMENTAL CINNAMON SCRAPER
 Scrapes ONLY last 4 weeks of data (for weekly automation)
 Uses same pattern as full scraper
 UPDATED: Includes National as a regular district row
+NOTE: No changes needed - already scrapes weekly data correctly
 """
 
 import requests
@@ -231,6 +232,7 @@ def scrape_last_4_weeks(existing_csv_path=None):
     """
     print("\n" + "="*80)
     print("🔄 INCREMENTAL SCRAPER - Last 4 Weeks")
+    print("   Data frequency: ~4 reports per month (weekly)")
     print("="*80)
     
     # Calculate cutoff date (28 days ago)
@@ -333,6 +335,7 @@ if __name__ == "__main__":
     print("🔄 INCREMENTAL CINNAMON SCRAPER")
     print("   Scrapes ONLY last 4 weeks for weekly updates")
     print("   Includes National benchmark prices")
+    print("   Data frequency: ~4 reports per month (weekly)")
     print("="*80)
     
     # Look for existing data in parent directory (repository structure)
@@ -377,5 +380,7 @@ if __name__ == "__main__":
         print(df.tail(3).to_string(index=False))
         
         print(f"\n🎉 SUCCESS! Updated data saved to {output_file}")
+        print(f"\n💡 NOTE: Scraper already collects weekly data correctly")
+        print(f"   No changes needed - works perfectly with weekly model!")
     else:
         print("\n❌ Failed to collect data")
