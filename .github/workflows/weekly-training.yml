@@ -1,4 +1,4 @@
-name: Weekly ML Training Pipeline
+name: Weekly Model Training Pipeline
 
 on:
   schedule:
