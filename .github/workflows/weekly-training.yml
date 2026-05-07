@@ -35,7 +35,7 @@ jobs:
     # ========================================
     # SCRAPE & UPDATE DATA
     # ========================================
-    - name: 🕷️ Scrape Latest Data (Last 4 Weeks)
+    - name: Scrape Latest Data (Last 4 Weeks)
       run: |
         if [ -f "data/cinnamon_grades.csv" ]; then
            echo " Current dataset: $(wc -l < data/cinnamon_grades.csv) lines"
