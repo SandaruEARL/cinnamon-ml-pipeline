@@ -83,7 +83,7 @@ jobs:
     # ========================================
     # CONVERT TO TFLITE
     # ========================================
-    - name: 📱 Convert to TFLite
+    - name: Convert to TFLite
       run: |
         python scripts/convert_to_tflite.py
         
@@ -99,7 +99,7 @@ jobs:
     # ========================================
     # EXPORT FOR FLUTTER
     # ========================================
-    - name: 📤 Export Preprocessing for Flutter
+    - name: Export Preprocessing for Flutter
       run: |
         python scripts/export_preprocessing_to_json.py
         
